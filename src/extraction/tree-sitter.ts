@@ -2433,6 +2433,12 @@ export class TreeSitterExtractor {
     if (this.isAuraComponentJs) {
       this.extractAuraApexCall(node, callerId);
     }
+
+    // viva (project-local, never upstream): a React app calls Apex over a
+    // postMessage bridge — `remoteAction("Class.method", args)` /
+    // `useRemoteActionQuery(["Class.method", args])`. Emit a `calls` ref to the
+    // Apex method, prefixed so only the salesforce resolver claims it.
+    this.extractRemoteActionCall(node, callerId);
   }
 
   /**
@@ -2455,6 +2461,43 @@ export class TreeSitterExtractor {
     this.unresolvedReferences.push({
       fromNodeId: callerId,
       referenceName: m[1],
+      referenceKind: 'calls',
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
+  }
+
+  /**
+   * viva-specific (project-local, NEVER upstream): a React app invokes Apex via
+   * a postMessage bridge. The call carries the Apex target as a string literal:
+   *   remoteAction("BioImportController.getSystemConfig", [...])
+   *   useRemoteActionQuery(["ExcelProcessorDemoController.getUsers", []])
+   * Emit a `calls` ref named `@remoteAction/Class.method`. The `@remoteAction/`
+   * sentinel (mirroring `@salesforce/apex/`) means ONLY the salesforce resolver
+   * claims it — a regular JS `obj.method()` is never mistaken for an Apex call.
+   */
+  private extractRemoteActionCall(node: SyntaxNode, callerId: string): void {
+    if (this.language !== 'javascript' && this.language !== 'typescript' &&
+        this.language !== 'tsx' && this.language !== 'jsx') return;
+    const func = getChildByField(node, 'function');
+    if (!func || func.type !== 'identifier') return;
+    const fnName = getNodeText(func, this.source);
+    if (fnName !== 'remoteAction' && fnName !== 'useRemoteActionQuery') return;
+    const args = getChildByField(node, 'arguments');
+    // Unwrap a TS `"X" as RemoteActionFunctionName` assertion to the inner node.
+    const unwrap = (n: SyntaxNode | null | undefined): SyntaxNode | null =>
+      n && (n.type === 'as_expression' || n.type === 'satisfies_expression')
+        ? (n.namedChild(0) ?? null) : (n ?? null);
+    let first = unwrap(args?.namedChild(0));
+    // useRemoteActionQuery takes a queryKey tuple `["Class.method", args]` —
+    // descend into the array to its first element.
+    if (first && first.type === 'array') first = unwrap(first.namedChild(0));
+    if (!first || first.type !== 'string') return;
+    const literal = getNodeText(first, this.source).replace(/^['"`]|['"`]$/g, '');
+    if (!/^[A-Z]\w*\.\w+$/.test(literal)) return;
+    this.unresolvedReferences.push({
+      fromNodeId: callerId,
+      referenceName: `@remoteAction/${literal}`,
       referenceKind: 'calls',
       line: node.startPosition.row + 1,
       column: node.startPosition.column,

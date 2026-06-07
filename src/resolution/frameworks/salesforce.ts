@@ -104,9 +104,38 @@ function resolveAuraApexCall(ref: UnresolvedRef, context: ResolutionContext): Re
   return { original: ref, targetNodeId: target.id, confidence: 0.9, resolvedBy: 'framework' };
 }
 
+/**
+ * viva-specific (project-local, NEVER upstream): resolve a React→Apex
+ * postMessage-bridge call. The extractor emits a `calls` ref named
+ * `@remoteAction/Class.method` for `remoteAction("Class.method", …)` /
+ * `useRemoteActionQuery(["Class.method", …])`. Map it to the Apex method's
+ * qualifiedName `Class::method`. The `@remoteAction/` sentinel guarantees this
+ * only fires for genuine bridge calls, never a coincidental JS member call.
+ */
+const REMOTE_ACTION_PREFIX = '@remoteAction/';
+function resolveRemoteActionCall(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (ref.referenceKind !== 'calls') return null;
+  if (!ref.referenceName.startsWith(REMOTE_ACTION_PREFIX)) return null;
+  const dotted = ref.referenceName.slice(REMOTE_ACTION_PREFIX.length);
+  const dot = dotted.indexOf('.');
+  if (dot <= 0) return null;
+  const qualifiedName = `${dotted.slice(0, dot)}::${dotted.slice(dot + 1)}`;
+  const target = context
+    .getNodesByQualifiedName(qualifiedName)
+    .find((n) => n.kind === 'method' && n.language === 'apex');
+  if (!target) return null;
+  return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' };
+}
+
 export const salesforceResolver: FrameworkResolver = {
   name: 'salesforce',
   languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura'],
+
+  claimsReference(name: string): boolean {
+    // The `@remoteAction/...` sentinel has no node of that literal name, so the
+    // resolver must opt it past the "no possible match" pre-filter.
+    return name.startsWith(REMOTE_ACTION_PREFIX);
+  },
 
   detect(context: ResolutionContext): boolean {
     // Salesforce DX project: Apex classes present, or an lwc/aura bundle dir.
@@ -117,6 +146,10 @@ export const salesforceResolver: FrameworkResolver = {
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    // viva React→Apex postMessage bridge (`@remoteAction/Class.method`).
+    const remoteAction = resolveRemoteActionCall(ref, context);
+    if (remoteAction) return remoteAction;
+
     // Visualforce markup → Apex controller/extension class or custom component.
     // Resolved through the framework path so the cross-language edge survives the
     // gate (Apex is its own language family — `gateFrameworkLanguage` keeps it).

@@ -6700,4 +6700,48 @@ describe('Aura extraction + resolver', () => {
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
+
+  // viva-local (never upstream): React→Apex postMessage bridge.
+  it('resolves React remoteAction("Class.method") / useRemoteActionQuery to Apex', async () => {
+    const dir = createTempDir();
+    try {
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      const app = path.join(dir, 'packages/apps/bio-import/src');
+      fs.mkdirSync(classes, { recursive: true });
+      fs.mkdirSync(app, { recursive: true });
+
+      fs.writeFileSync(path.join(classes, 'BioImportController.cls'),
+        `public with sharing class BioImportController {\n` +
+        `  @RemoteAction public static String getSystemConfig() { return null; }\n` +
+        `  @RemoteAction public static String importAllOrNone(String b) { return null; }\n}\n`);
+      fs.writeFileSync(path.join(app, 'ImportWorkflow.tsx'),
+        `import { remoteAction } from "@v/shared/utils/remoteAction";\n` +
+        `export async function run() {\n` +
+        `  const cfg = await remoteAction("BioImportController.getSystemConfig", []);\n` +
+        `  return cfg;\n}\n`);
+      fs.writeFileSync(path.join(app, 'useConfig.ts'),
+        `import { useRemoteActionQuery } from "@v/shared/hooks";\n` +
+        `type RemoteActionFunctionName = \`\${string}.\${string}\`;\n` +
+        `export function useImport() {\n` +
+        `  return useRemoteActionQuery(["BioImportController.importAllOrNone" as RemoteActionFunctionName, []]);\n}\n`);
+      // A plain JS member call that must NOT be mistaken for an Apex call.
+      fs.writeFileSync(path.join(app, 'noise.ts'),
+        `export function clean(s: string) { return s.replace("a", "b"); }\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.cls', '**/*.ts', '**/*.tsx'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      const deps = cg.getFileDependents('force-app/main/default/classes/BioImportController.cls');
+      // remoteAction(...) call
+      expect(deps).toContain('packages/apps/bio-import/src/ImportWorkflow.tsx');
+      // useRemoteActionQuery([...]) call
+      expect(deps).toContain('packages/apps/bio-import/src/useConfig.ts');
+      // String.replace() must NOT link to any Apex method
+      expect(deps).not.toContain('packages/apps/bio-import/src/noise.ts');
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
 });
