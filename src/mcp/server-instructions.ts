@@ -45,6 +45,7 @@ typically one to a few calls; a grep/read exploration is dozens.
 - **One specific symbol's full source (esp. a body \`codegraph_explore\` trimmed), or an OVERLOADED name** → \`codegraph_node\` (with \`includeCode\`): for an ambiguous name it returns EVERY matching definition's body in one call, so you never Read a file to find the right overload
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
+- **Salesforce — "where is field \`Object__c.Field__c\` read/written?" / "what breaks if I change or remove it?"** → \`codegraph_field_search\` (type + usage summary) / \`codegraph_field_usages\` (per-site, typed read/write/SOQL/LWC-bind) / \`codegraph_field_impact\` (blast radius). The symbol tools above don't cover SObject FIELDS — these do, object-disambiguated so \`Milestone__c.Amount__c\` never collides with \`Task__c.Amount__c\`.
 
 ## Common chains
 
@@ -52,6 +53,7 @@ typically one to a few calls; a grep/read exploration is dozens.
 - **Onboarding / understanding any area**: ONE \`codegraph_explore\` is usually the whole answer. Only follow up — \`codegraph_node\` for a specific symbol — if something is still unclear.
 - **Refactor planning**: \`codegraph_search\` → \`codegraph_callers\` → \`codegraph_impact\`. The blast-radius answer comes from impact, not from walking callers manually.
 - **Debugging a regression**: \`codegraph_callers\` of the suspected symbol; widen with \`codegraph_impact\` if an unexpected call appears.
+- **Salesforce field change ("replace field A with B" / retype / delete)**: \`codegraph_field_impact\` \`<Object.Field>\` FIRST — it returns every code site (Apex read/write, SOQL, LWC bind) PLUS the declarative metadata (Layouts, Validation Rules, formula fields) that breaks SILENTLY and grep misses. Then \`codegraph_field_usages\` for the per-site list. No manual object-disambiguation needed.
 
 ## Anti-patterns
 
