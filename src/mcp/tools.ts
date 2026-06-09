@@ -581,7 +581,7 @@ export const tools: ToolDefinition[] = [
         kind: {
           type: 'string',
           description: 'Filter to one usage kind',
-          enum: ['read', 'write', 'soql'],
+          enum: ['read', 'write', 'soql', 'bind'],
         },
         projectPath: projectPathProperty,
       },
@@ -1258,7 +1258,8 @@ export class ToolHandler {
       ``,
       `Usages (${usages.length}): ` +
         `read=${count('field_read')} write=${count('field_write')} ` +
-        `soql_select=${count('field_soql_select')} soql_filter=${count('field_soql_filter')}`,
+        `soql_select=${count('field_soql_select')} soql_filter=${count('field_soql_filter')} ` +
+        `bind_lwc=${count('field_bind_lwc')} bind_vf=${count('field_bind_vf')}`,
       ``,
       `Use codegraph_field_usages "${field}" for the per-site list.`,
     ];
@@ -1278,6 +1279,7 @@ export class ToolHandler {
       kindArg === 'read' ? ['field_read'] :
       kindArg === 'write' ? ['field_write'] :
       kindArg === 'soql' ? ['field_soql_select', 'field_soql_filter'] :
+      kindArg === 'bind' ? ['field_bind_lwc', 'field_bind_vf'] :
       undefined;
 
     if (!cg.getField(field)) {
@@ -1291,6 +1293,7 @@ export class ToolHandler {
     const label: Record<string, string> = {
       field_read: 'READ', field_write: 'WRITE',
       field_soql_select: 'SOQL_SELECT', field_soql_filter: 'SOQL_FILTER',
+      field_bind_lwc: 'BIND_LWC', field_bind_vf: 'BIND_VF',
     };
     // Group by file, then sort by line.
     const byFile = new Map<string, Array<{ line: number; kind: EdgeKind }>>();

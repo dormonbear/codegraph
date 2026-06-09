@@ -29,4 +29,5 @@
 // v7: (viva-local, never upstream) React→Apex postMessage bridge — remoteAction("Class.method").
 // v8: (viva-local, never upstream) SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
 // v9: (viva-local, never upstream) P2 relationship-path field resolution — `A__r.B__c` in Apex + SOQL.
-export const EXTRACTION_VERSION = 9;
+// v10: (viva-local, never upstream) P3 cross-layer LWC field binds — lightning-input-field → sobject_field.
+export const EXTRACTION_VERSION = 10;

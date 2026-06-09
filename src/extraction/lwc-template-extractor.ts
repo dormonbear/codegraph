@@ -37,6 +37,7 @@ export class LwcTemplateExtractor {
     try {
       const componentId = this.createComponentNode().id;
       this.extractChildComponentTags(componentId);
+      this.extractFieldBinds(componentId);
     } catch (error) {
       this.errors.push({
         message: `LWC template extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -103,6 +104,42 @@ export class LwcTemplateExtractor {
         fromNodeId: componentId,
         referenceName: this.pascalize(kebab),
         referenceKind: 'references',
+        line: this.lineAt(m.index),
+        column: 0,
+        filePath: this.filePath,
+        language: 'lwc',
+      });
+    }
+  }
+
+  /**
+   * (viva-local) SObject field binds: `<lightning-input-field field-name="X">`
+   * (and output-field) inside a `<lightning-record-edit/view/form
+   * object-api-name="Obj">`. The form supplies the object so the bind is
+   * disambiguated — `field-name="Amount__c"` under a Task__c form binds
+   * `Task__c.Amount__c`, not Milestone__c's. A field with a dynamic
+   * `field-name={…}` (no string literal) or outside any record form is skipped.
+   * Emits `@field/Object.Field` (kind field_bind_lwc), resolved by salesforce.ts.
+   */
+  private extractFieldBinds(componentId: string): void {
+    const re = /<lightning-record-(?:edit-|view-)?form\b[^>]*>|<\/lightning-record-(?:edit-|view-)?form>|<lightning-(?:input|output)-field\b[^>]*>/gis;
+    const stack: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(this.source)) !== null) {
+      const tag = m[0];
+      if (tag.startsWith('</')) { stack.pop(); continue; }
+      if (/^<lightning-record/i.test(tag)) {
+        stack.push(tag.match(/object-api-name\s*=\s*"([^"]+)"/i)?.[1] ?? '');
+        continue;
+      }
+      const obj = stack.length ? stack[stack.length - 1] : '';
+      if (!obj) continue; // no object context — skip (silent)
+      const field = tag.match(/field-name\s*=\s*"([^"]+)"/i)?.[1];
+      if (!field) continue; // dynamic field-name={…} — skip
+      this.unresolvedReferences.push({
+        fromNodeId: componentId,
+        referenceName: `@field/${obj}.${field}`,
+        referenceKind: 'field_bind_lwc',
         line: this.lineAt(m.index),
         column: 0,
         filePath: this.filePath,

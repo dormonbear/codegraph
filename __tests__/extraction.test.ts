@@ -6847,4 +6847,48 @@ describe('Aura extraction + resolver', () => {
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
+
+  // viva-local (never upstream): P3 cross-layer LWC field binds.
+  it('binds LWC lightning-input-field to its SObject field, form-disambiguated', async () => {
+    const dir = createTempDir();
+    try {
+      const mFields = path.join(dir, 'force-app/main/default/objects/Milestone__c/fields');
+      const tFields = path.join(dir, 'force-app/main/default/objects/Task__c/fields');
+      const lwc = path.join(dir, 'force-app/main/default/lwc/projectSummary');
+      fs.mkdirSync(mFields, { recursive: true });
+      fs.mkdirSync(tFields, { recursive: true });
+      fs.mkdirSync(lwc, { recursive: true });
+      const field = (n: string) =>
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>${n}</fullName>\n<type>Currency</type>\n</CustomField>\n`;
+      fs.writeFileSync(path.join(mFields, 'Editable_Amount__c.field-meta.xml'), field('Editable_Amount__c'));
+      fs.writeFileSync(path.join(tFields, 'Amount__c.field-meta.xml'), field('Amount__c'));
+
+      // Two forms — Milestone__c then Task__c — each binds a field. The form's
+      // object-api-name disambiguates which object the field-name belongs to.
+      fs.writeFileSync(path.join(lwc, 'projectSummary.html'),
+        `<template>\n` +
+        `  <lightning-record-edit-form object-api-name="Milestone__c">\n` +
+        `    <lightning-input-field field-name="Editable_Amount__c"></lightning-input-field>\n` +
+        `  </lightning-record-edit-form>\n` +
+        `  <lightning-record-edit-form object-api-name="Task__c">\n` +
+        `    <lightning-input-field field-name="Amount__c"></lightning-input-field>\n` +
+        `  </lightning-record-edit-form>\n` +
+        `</template>\n`);
+      fs.writeFileSync(path.join(lwc, 'projectSummary.js'), `import { LightningElement } from 'lwc';\nexport default class ProjectSummary extends LightningElement {}\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.field-meta.xml', '**/*.html', '**/*.js'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      // Editable_Amount__c bind is under the Milestone__c form.
+      const ea = cg.getFieldUsages('Milestone__c.Editable_Amount__c', ['field_bind_lwc']);
+      expect(ea.length).toBe(1);
+      expect(ea[0]!.file).toContain('projectSummary.html');
+      // The Task__c form's `Amount__c` binds Task__c.Amount__c, NOT Milestone__c's.
+      expect(cg.getFieldUsages('Task__c.Amount__c', ['field_bind_lwc']).length).toBe(1);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
 });

@@ -999,7 +999,7 @@ export class CodeGraph {
     const field = this.getField(qualifiedName);
     if (!field) return [];
     const fieldKinds: EdgeKind[] =
-      kinds ?? ['field_read', 'field_write', 'field_soql_select', 'field_soql_filter'];
+      kinds ?? ['field_read', 'field_write', 'field_soql_select', 'field_soql_filter', 'field_bind_lwc', 'field_bind_vf'];
     const edges = this.queries.getIncomingEdges(field.id, fieldKinds);
     // Deduplicate by file+line+kind — a single source line can read a field
     // more than once (`x != null ? x : 0`), which is one usage SITE to a reviewer.
