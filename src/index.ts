@@ -1001,10 +1001,20 @@ export class CodeGraph {
     const fieldKinds: EdgeKind[] =
       kinds ?? ['field_read', 'field_write', 'field_soql_select', 'field_soql_filter'];
     const edges = this.queries.getIncomingEdges(field.id, fieldKinds);
-    return edges.map((e) => {
+    // Deduplicate by file+line+kind — a single source line can read a field
+    // more than once (`x != null ? x : 0`), which is one usage SITE to a reviewer.
+    const seen = new Set<string>();
+    const out: Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }> = [];
+    for (const e of edges) {
       const from = this.queries.getNodeById(e.source);
-      return { file: from?.filePath ?? '', line: e.line ?? 0, kind: e.kind, from };
-    });
+      const file = from?.filePath ?? '';
+      const line = e.line ?? 0;
+      const key = `${file}:${line}:${e.kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ file, line, kind: e.kind, from });
+    }
+    return out;
   }
 
   /**

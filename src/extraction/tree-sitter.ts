@@ -2569,17 +2569,37 @@ export class TreeSitterExtractor {
     }
   }
 
-  /** Collect simple (non-relationship) SOQL field identifiers under a clause, not
-   * descending into nested subquery `query_expression`s (they own their object).
-   * Returns the `identifier` node so the edge lands on the field's own line. */
-  private collectSoqlFieldNames(node: SyntaxNode, out: SyntaxNode[]): void {
+  /** Collect SOQL fields under a clause — both simple (`Amount__c`) and
+   * relationship-path (`Milestone__r.Amount__c`). Does not descend into nested
+   * subquery `query_expression`s (they own their object). `segments` is the
+   * dotted path (length 1 for a simple field); `at` is the node for line/column. */
+  private collectSoqlFields(node: SyntaxNode, out: Array<{ at: SyntaxNode; segments: string[] }>): void {
     if (node.type === 'query_expression') return;
     if (node.type === 'field_identifier') {
       const inner = node.namedChild(0);
-      if (inner && inner.type === 'identifier') out.push(inner);
-      return; // dotted_identifier (relationship path) skipped in P1
+      if (!inner) return;
+      if (inner.type === 'identifier') {
+        out.push({ at: inner, segments: [getNodeText(inner, this.source)] });
+      } else if (inner.type === 'dotted_identifier') {
+        const segs: string[] = [];
+        for (let i = 0; i < inner.namedChildCount; i++) {
+          const c = inner.namedChild(i);
+          if (c?.type === 'identifier') segs.push(getNodeText(c, this.source));
+        }
+        if (segs.length >= 2) out.push({ at: inner, segments: segs });
+      }
+      return;
     }
-    for (let i = 0; i < node.namedChildCount; i++) this.collectSoqlFieldNames(node.namedChild(i)!, out);
+    for (let i = 0; i < node.namedChildCount; i++) this.collectSoqlFields(node.namedChild(i)!, out);
+  }
+
+  /** Emit a SOQL field (simple → @field, relationship-path → @fieldpath). */
+  private emitSoqlField(object: string, f: { at: SyntaxNode; segments: string[] }, kind: EdgeKind): void {
+    if (f.segments.length === 1) {
+      this.emitFieldRef(object, f.segments[0]!, kind, f.at);
+    } else if (f.segments.slice(0, -1).every((r) => r.endsWith('__r'))) {
+      this.emitFieldPathRef(object, f.segments, kind, f.at);
+    }
   }
 
   private extractSoqlFields(queryNode: SyntaxNode): void {
@@ -2607,28 +2627,46 @@ export class TreeSitterExtractor {
     }
     if (!object) return;
     if (selectClause) {
-      const sel: SyntaxNode[] = [];
-      this.collectSoqlFieldNames(selectClause, sel);
-      for (const f of sel) this.emitFieldRef(object, getNodeText(f, this.source), 'field_soql_select', f);
+      const sel: Array<{ at: SyntaxNode; segments: string[] }> = [];
+      this.collectSoqlFields(selectClause, sel);
+      for (const f of sel) this.emitSoqlField(object, f, 'field_soql_select');
     }
     for (const fc of filterClauses) {
-      const fs: SyntaxNode[] = [];
-      this.collectSoqlFieldNames(fc, fs);
-      for (const f of fs) this.emitFieldRef(object, getNodeText(f, this.source), 'field_soql_filter', f);
+      const fs: Array<{ at: SyntaxNode; segments: string[] }> = [];
+      this.collectSoqlFields(fc, fs);
+      for (const f of fs) this.emitSoqlField(object, f, 'field_soql_filter');
     }
   }
 
   private extractApexFieldAccess(node: SyntaxNode): void {
-    const recv = node.namedChild(0);
-    const prop = node.namedChild(node.namedChildCount - 1);
-    if (!recv || !prop || recv.type !== 'identifier' || prop.type !== 'identifier') return;
-    const objType = this.apexVarTypes.get(getNodeText(recv, this.source));
-    if (!objType) return;
-    const field = getNodeText(prop, this.source);
-    // Write when this field_access is the assignment LHS; else read.
+    // Only the OUTERMOST field_access of a chain — an inner link (its parent is
+    // also field_access) is part of a longer `a.b.c`, handled by the outer.
+    if (node.parent?.type === 'field_access') return;
+    // Walk outer→inner collecting property names: `t.Milestone__r.Amount__c`
+    // yields segments [Milestone__r, Amount__c] with base var `t`.
+    const segments: string[] = [];
+    let cur: SyntaxNode | null = node;
+    while (cur && cur.type === 'field_access') {
+      const prop: SyntaxNode | null = cur.namedChild(cur.namedChildCount - 1);
+      if (!prop || prop.type !== 'identifier') return;
+      segments.unshift(getNodeText(prop, this.source));
+      cur = cur.namedChild(0);
+    }
+    if (!cur || cur.type !== 'identifier' || segments.length === 0) return; // base not a simple var
+    const baseType = this.apexVarTypes.get(getNodeText(cur, this.source));
+    if (!baseType) return;
+    const field = segments[segments.length - 1]!;
+    const rels = segments.slice(0, -1);
     const parent = node.parent;
     const isWrite = parent?.type === 'assignment_expression' && parent.namedChild(0)?.id === node.id;
-    this.emitFieldRef(objType, field, isWrite ? 'field_write' : 'field_read', node);
+    const kind: EdgeKind = isWrite ? 'field_write' : 'field_read';
+    if (rels.length === 0) {
+      this.emitFieldRef(baseType, field, kind, node); // simple `var.Field`
+    } else if (rels.every((r) => r.endsWith('__r'))) {
+      this.emitFieldPathRef(baseType, segments, kind, node); // `var.Rel__r.Field` (P2)
+    }
+    // A mixed/non-relationship intermediate (`a.b.c` where b isn't `__r`) is
+    // skipped — silent beats wrong.
   }
 
   private extractApexConstructorFields(node: SyntaxNode): void {
@@ -2657,6 +2695,21 @@ export class TreeSitterExtractor {
     this.unresolvedReferences.push({
       fromNodeId: fromId,
       referenceName: `@field/${objectType}.${field}`,
+      referenceKind: kind,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
+  }
+
+  /** (P2) Relationship-path field ref: `@fieldpath/BaseObject/Rel__r.…​.Field`.
+   * The salesforce resolver walks the `__r` hops via each lookup field's
+   * referenceTo to reach the field's true object. */
+  private emitFieldPathRef(baseObject: string, segments: string[], kind: EdgeKind, node: SyntaxNode): void {
+    const fromId = this.nodeStack[this.nodeStack.length - 1];
+    if (!fromId) return;
+    this.unresolvedReferences.push({
+      fromNodeId: fromId,
+      referenceName: `@fieldpath/${baseObject}/${segments.join('.')}`,
       referenceKind: kind,
       line: node.startPosition.row + 1,
       column: node.startPosition.column,

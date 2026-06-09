@@ -6805,4 +6805,46 @@ describe('Aura extraction + resolver', () => {
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
+
+  // viva-local (never upstream): P2 relationship-path resolution (A__r.B__c).
+  it('resolves SObject relationship-path field usages via referenceTo', async () => {
+    const dir = createTempDir();
+    try {
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      const mFields = path.join(dir, 'force-app/main/default/objects/Milestone__c/fields');
+      const tFields = path.join(dir, 'force-app/main/default/objects/Task__c/fields');
+      fs.mkdirSync(classes, { recursive: true });
+      fs.mkdirSync(mFields, { recursive: true });
+      fs.mkdirSync(tFields, { recursive: true });
+
+      fs.writeFileSync(path.join(mFields, 'Editable_Amount__c.field-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Editable_Amount__c</fullName>\n<type>Currency</type>\n</CustomField>\n`);
+      // Lookup field Task__c.Milestone__c → Milestone__c (relationship name Milestone__r).
+      fs.writeFileSync(path.join(tFields, 'Milestone__c.field-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Milestone__c</fullName>\n<type>Lookup</type>\n<referenceTo>Milestone__c</referenceTo>\n</CustomField>\n`);
+
+      fs.writeFileSync(path.join(classes, 'Rel.cls'),
+        `public class Rel {\n` +
+        `  public void run(Task__c t) {\n` +
+        `    Decimal a = t.Milestone__r.Editable_Amount__c;\n` +
+        `    List<Task__c> ts = [SELECT Milestone__r.Editable_Amount__c FROM Task__c];\n` +
+        `  }\n}\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.cls', '**/*.field-meta.xml'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      // The lookup field node carries its referenceTo target.
+      expect(cg.getField('Task__c.Milestone__c')?.signature).toBe('Lookup:Milestone__c');
+
+      // Both the Apex `t.Milestone__r.Editable_Amount__c` read and the SOQL
+      // `Milestone__r.Editable_Amount__c` select resolve onto Milestone__c.Editable_Amount__c.
+      const usages = cg.getFieldUsages('Milestone__c.Editable_Amount__c');
+      expect(usages.filter((u) => u.kind === 'field_read').length).toBe(1);
+      expect(usages.filter((u) => u.kind === 'field_soql_select').length).toBe(1);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
 });

@@ -28,4 +28,5 @@
 // v6: added Aura (.cmp/.app/.evt/.intf) extractor + Aura JS handlers + cmp.get("c.x") → Apex.
 // v7: (viva-local, never upstream) React→Apex postMessage bridge — remoteAction("Class.method").
 // v8: (viva-local, never upstream) SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
-export const EXTRACTION_VERSION = 8;
+// v9: (viva-local, never upstream) P2 relationship-path field resolution — `A__r.B__c` in Apex + SOQL.
+export const EXTRACTION_VERSION = 9;

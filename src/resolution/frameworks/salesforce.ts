@@ -146,6 +146,41 @@ function resolveSObjectFieldRef(ref: UnresolvedRef, context: ResolutionContext):
   return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' };
 }
 
+/**
+ * viva-specific (P2): resolve a relationship-path field usage
+ * `@fieldpath/BaseObject/Rel1__r.Rel2__r.Field`. Walk each `Rel__r` hop by
+ * looking up the lookup field `Rel__c` on the current object and reading its
+ * referenceTo (stashed in the field node's typeParameters) to reach the next
+ * object; then resolve the terminal field on the final object. Any missing hop
+ * (no lookup field, no referenceTo, no terminal field) → unresolved (silent).
+ */
+const FIELDPATH_PREFIX = '@fieldpath/';
+function resolveSObjectFieldPath(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (!ref.referenceName.startsWith(FIELDPATH_PREFIX)) return null;
+  const rest = ref.referenceName.slice(FIELDPATH_PREFIX.length); // BaseObject/seg.seg.field
+  const slash = rest.indexOf('/');
+  if (slash <= 0) return null;
+  let object = rest.slice(0, slash);
+  const segments = rest.slice(slash + 1).split('.');
+  if (segments.length < 2) return null;
+  const lookupField = (n: string) =>
+    context.getNodesByQualifiedName(`${object}.${n}`).find((x) => x.kind === 'sobject_field');
+  // Walk relationship hops (all but the last segment).
+  for (let i = 0; i < segments.length - 1; i++) {
+    const rel = segments[i]!;
+    if (!rel.endsWith('__r')) return null;
+    const node = lookupField(rel.slice(0, -3) + '__c'); // Rel__r → Rel__c lookup field
+    const target = node?.typeParameters?.[0]; // referenceTo
+    if (!target) return null;
+    object = target;
+  }
+  const terminal = context
+    .getNodesByQualifiedName(`${object}.${segments[segments.length - 1]}`)
+    .find((n) => n.kind === 'sobject_field');
+  if (!terminal) return null;
+  return { original: ref, targetNodeId: terminal.id, confidence: 0.9, resolvedBy: 'framework' };
+}
+
 export const salesforceResolver: FrameworkResolver = {
   name: 'salesforce',
   languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura', 'apex'],
@@ -154,7 +189,11 @@ export const salesforceResolver: FrameworkResolver = {
     // The `@remoteAction/...` / `@field/...` sentinels have no node of that
     // literal name, so the resolver must opt them past the "no possible match"
     // pre-filter.
-    return name.startsWith(REMOTE_ACTION_PREFIX) || name.startsWith(FIELD_PREFIX);
+    return (
+      name.startsWith(REMOTE_ACTION_PREFIX) ||
+      name.startsWith(FIELD_PREFIX) ||
+      name.startsWith(FIELDPATH_PREFIX)
+    );
   },
 
   detect(context: ResolutionContext): boolean {
@@ -169,6 +208,10 @@ export const salesforceResolver: FrameworkResolver = {
     // viva Apex/SOQL SObject field usage (`@field/Object.Field`).
     const field = resolveSObjectFieldRef(ref, context);
     if (field) return field;
+
+    // viva relationship-path field usage (`@fieldpath/Base/Rel__r.Field`).
+    const fieldPath = resolveSObjectFieldPath(ref, context);
+    if (fieldPath) return fieldPath;
 
     // viva React→Apex postMessage bridge (`@remoteAction/Class.method`).
     const remoteAction = resolveRemoteActionCall(ref, context);
