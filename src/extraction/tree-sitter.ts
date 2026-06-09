@@ -16,7 +16,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, isSObjectFieldMeta } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, isSObjectFieldMeta, isSalesforceMetadata } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
@@ -26,6 +26,7 @@ import { VisualforceExtractor } from './visualforce-extractor';
 import { LwcTemplateExtractor } from './lwc-template-extractor';
 import { AuraExtractor } from './aura-extractor';
 import { SObjectSchemaExtractor } from './sobject-schema-extractor';
+import { SalesforceMetadataExtractor } from './salesforce-metadata-extractor';
 import { SvelteExtractor } from './svelte-extractor';
 import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
@@ -4453,6 +4454,10 @@ export function extractFromSource(
     // (viva-local) Salesforce SObject field metadata (objects/*/fields/*.field-meta.xml)
     // → one sobject_field node. Checked before the generic xml branch.
     const extractor = new SObjectSchemaExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (isSalesforceMetadata(filePath)) {
+    // (viva-local) Salesforce Layout / ValidationRule → field_metadata_ref edges.
+    const extractor = new SalesforceMetadataExtractor(filePath, source);
     result = extractor.extract();
   } else if (detectedLanguage === 'xml') {
     // Custom extractor for MyBatis mapper XML. Non-mapper XML returns just a

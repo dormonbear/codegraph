@@ -30,4 +30,5 @@
 // v8: (viva-local, never upstream) SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
 // v9: (viva-local, never upstream) P2 relationship-path field resolution — `A__r.B__c` in Apex + SOQL.
 // v10: (viva-local, never upstream) P3 cross-layer LWC field binds — lightning-input-field → sobject_field.
-export const EXTRACTION_VERSION = 10;
+// v11: (viva-local, never upstream) P4 field metadata refs — Layout/ValidationRule/formula → sobject_field (field_impact).
+export const EXTRACTION_VERSION = 11;

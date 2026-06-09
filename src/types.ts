@@ -65,7 +65,8 @@ export type EdgeKind =
   | 'field_soql_select' // SOQL SELECT names the field
   | 'field_soql_filter' // SOQL WHERE/ORDER BY names the field
   | 'field_bind_lwc'  // LWC lightning-input/output-field binds the field
-  | 'field_bind_vf';  // Visualforce apex:inputField/outputField binds the field
+  | 'field_bind_vf'   // Visualforce apex:inputField/outputField binds the field
+  | 'field_metadata_ref'; // declarative metadata (Layout/ValidationRule/formula) references the field
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

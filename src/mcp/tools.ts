@@ -588,6 +588,21 @@ export const tools: ToolDefinition[] = [
       required: ['field'],
     },
   },
+  {
+    name: 'codegraph_field_impact',
+    description: 'Salesforce: blast radius of changing or removing an SObject field `Object__c.Field__c` — its code usages (Apex/SOQL/LWC) PLUS the declarative metadata that references it (Page Layouts, Validation Rules, formula fields) and whether the field is itself a formula. Those metadata references are the SILENT breakers a code-only grep misses — surface them before deleting or retyping a field. The field analogue of codegraph_impact.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        field: {
+          type: 'string',
+          description: 'Fully-qualified field `Object.Field` (e.g. "Milestone__c.Editable_Amount__c")',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['field'],
+    },
+  },
 ];
 
 /**
@@ -1078,6 +1093,8 @@ export class ToolHandler {
           result = await this.handleFieldSearch(args); break;
         case 'codegraph_field_usages':
           result = await this.handleFieldUsages(args); break;
+        case 'codegraph_field_impact':
+          result = await this.handleFieldImpact(args); break;
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -1308,6 +1325,47 @@ export class ToolHandler {
         out.push(`  ${label[s.kind] ?? s.kind} @ ${s.line}`);
       }
     }
+    return this.textResult(this.truncateOutput(out.join('\n')));
+  }
+
+  /**
+   * (viva-local) Handle codegraph_field_impact — code usages + the declarative
+   * metadata that references the field (the silent breakers).
+   */
+  private async handleFieldImpact(args: Record<string, unknown>): Promise<ToolResult> {
+    const field = this.validateString(args.field, 'field');
+    if (typeof field !== 'string') return field;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const impact = cg.getFieldImpact(field);
+    if (!impact.field) {
+      return this.textResult(`SObject field "${field}" not found. Pass a fully-qualified \`Object.Field\`.`);
+    }
+    const count = (k: string) => impact.usages.filter((u) => u.kind === k).length;
+    const out: string[] = [
+      `Impact of changing/removing ${impact.field.qualifiedName}`,
+      `Type: ${impact.field.signature ?? 'Unknown'}${impact.isFormula ? '  ⚠ this is a FORMULA field' : ''}`,
+      ``,
+      `Code usages (${impact.usages.length}): ` +
+        `read=${count('field_read')} write=${count('field_write')} ` +
+        `soql=${count('field_soql_select') + count('field_soql_filter')} ` +
+        `bind=${count('field_bind_lwc') + count('field_bind_vf')}`,
+    ];
+    if (impact.metadataRefs.length === 0) {
+      out.push(``, `Metadata references: none detected (Layouts / Validation Rules / formula fields).`);
+    } else {
+      out.push(``, `⚠ Metadata references (${impact.metadataRefs.length}) — silent breakers on a type change / delete:`);
+      // Group by type for readability.
+      const byType = new Map<string, string[]>();
+      for (const r of impact.metadataRefs) {
+        if (!byType.has(r.type)) byType.set(r.type, []);
+        byType.get(r.type)!.push(r.name);
+      }
+      for (const [type, names] of [...byType.entries()].sort()) {
+        out.push(`  ${type}: ${[...new Set(names)].sort().join(', ')}`);
+      }
+    }
+    out.push(``, `Use codegraph_field_usages "${field}" for the per-site code list.`);
     return this.textResult(this.truncateOutput(out.join('\n')));
   }
 

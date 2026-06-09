@@ -176,6 +176,16 @@ export function isSObjectFieldMeta(filePath: string): boolean {
 }
 
 /**
+ * (viva-local) Salesforce declarative metadata that references SObject fields:
+ * Page Layouts (`*.layout-meta.xml`) and Validation Rules
+ * (`*.validationRule-meta.xml`). Routed to the metadata extractor for
+ * field_metadata_ref edges (field-impact's silent breakers).
+ */
+export function isSalesforceMetadata(filePath: string): boolean {
+  return /\.(layout|validationRule)-meta\.xml$/i.test(filePath);
+}
+
+/**
  * Play Framework routes file: the extensionless `conf/routes` (and included
  * `conf/*.routes`). No grammar — route extraction is done by the Play framework
  * resolver, so it's processed through the no-grammar (`yaml`-style) path.

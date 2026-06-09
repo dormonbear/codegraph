@@ -1,4 +1,4 @@
-import { Node, ExtractionResult, ExtractionError } from '../types';
+import { Node, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
 
 /**
@@ -26,6 +26,7 @@ export class SObjectSchemaExtractor {
   private filePath: string;
   private source: string;
   private nodes: Node[] = [];
+  private unresolvedReferences: UnresolvedReference[] = [];
   private errors: ExtractionError[] = [];
 
   constructor(filePath: string, source: string) {
@@ -37,7 +38,10 @@ export class SObjectSchemaExtractor {
     const startTime = Date.now();
     try {
       const node = this.buildFieldNode();
-      if (node) this.nodes.push(node);
+      if (node) {
+        this.nodes.push(node);
+        this.extractFormulaRefs(node);
+      }
     } catch (error) {
       this.errors.push({
         message: `SObject schema extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -48,10 +52,39 @@ export class SObjectSchemaExtractor {
     return {
       nodes: this.nodes,
       edges: [],
-      unresolvedReferences: [],
+      unresolvedReferences: this.unresolvedReferences,
       errors: this.errors,
       durationMs: Date.now() - startTime,
     };
+  }
+
+  /**
+   * A formula field references other fields on the SAME object — these are the
+   * silent breakers when a referenced field changes type or is deleted. Parse
+   * the `<formula>` body for `__c` custom-field tokens and emit a
+   * field_metadata_ref to each (`@field/Object.Token`); the formula field is the
+   * source so field_impact surfaces "referenced by formula <thisField>".
+   */
+  private extractFormulaRefs(formulaNode: Node): void {
+    const formula = this.tag('formula');
+    if (!formula) return;
+    const object = this.objectApiName();
+    if (!object) return;
+    const seen = new Set<string>();
+    for (const m of formula.matchAll(/\b([A-Za-z_]\w*__c)\b/g)) {
+      const token = m[1]!;
+      if (token === formulaNode.name || seen.has(token)) continue; // skip self / dupes
+      seen.add(token);
+      this.unresolvedReferences.push({
+        fromNodeId: formulaNode.id,
+        referenceName: `@field/${object}.${token}`,
+        referenceKind: 'field_metadata_ref',
+        line: 1,
+        column: 0,
+        filePath: this.filePath,
+        language: 'apex',
+      });
+    }
   }
 
   /** Object API name from `.../objects/<Object>/fields/<Field>.field-meta.xml`. */

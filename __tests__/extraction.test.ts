@@ -6891,4 +6891,49 @@ describe('Aura extraction + resolver', () => {
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
+
+  // viva-local (never upstream): P4 field_impact + metadata references.
+  it('field_impact surfaces Layout + formula metadata references', async () => {
+    const dir = createTempDir();
+    try {
+      const mFields = path.join(dir, 'force-app/main/default/objects/Milestone__c/fields');
+      const layouts = path.join(dir, 'force-app/main/default/layouts');
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      fs.mkdirSync(mFields, { recursive: true });
+      fs.mkdirSync(layouts, { recursive: true });
+      fs.mkdirSync(classes, { recursive: true });
+      // An Apex class so the Salesforce framework resolver is detected/active.
+      fs.writeFileSync(path.join(classes, 'Anchor.cls'), `public class Anchor {}\n`);
+
+      fs.writeFileSync(path.join(mFields, 'Editable_Amount__c.field-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Editable_Amount__c</fullName>\n<type>Currency</type>\n</CustomField>\n`);
+      // A formula field that references Editable_Amount__c.
+      fs.writeFileSync(path.join(mFields, 'Amount__c.field-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Amount__c</fullName>\n<type>Currency</type>\n<formula>Editable_Amount__c + 0</formula>\n</CustomField>\n`);
+      // A Page Layout that places Editable_Amount__c.
+      fs.writeFileSync(path.join(layouts, 'Milestone__c-Milestone Layout.layout-meta.xml'),
+        `<?xml version="1.0"?>\n<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n` +
+        `  <layoutSections><layoutColumns><layoutItems>\n` +
+        `    <behavior>Edit</behavior><field>Editable_Amount__c</field>\n` +
+        `  </layoutItems></layoutColumns></layoutSections>\n</Layout>\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.field-meta.xml', '**/*.layout-meta.xml', '**/*.cls'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      const impact = cg.getFieldImpact('Milestone__c.Editable_Amount__c');
+      expect(impact.field).not.toBeNull();
+      const types = impact.metadataRefs.map((r) => r.type).sort();
+      const names = impact.metadataRefs.map((r) => r.name);
+      // Referenced by the Milestone Layout and by the Amount__c formula field.
+      expect(types).toContain('Layout');
+      expect(names).toContain('Milestone Layout');
+      expect(names).toContain('Amount__c'); // the formula field
+      // The formula field itself is flagged as a formula.
+      expect(cg.getFieldImpact('Milestone__c.Amount__c').isFormula).toBe(true);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
 });

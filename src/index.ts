@@ -1018,6 +1018,43 @@ export class CodeGraph {
   }
 
   /**
+   * (viva-local) Blast radius of changing/removing a Salesforce SObject field:
+   * its code usages PLUS the declarative metadata that references it (Layouts,
+   * Validation Rules, formula fields) — the silent breakers a code-only grep
+   * misses. The field analogue of getImpactRadius.
+   */
+  getFieldImpact(qualifiedName: string): {
+    field: Node | null;
+    isFormula: boolean;
+    usages: Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }>;
+    metadataRefs: Array<{ name: string; type: string; file: string }>;
+  } {
+    const field = this.getField(qualifiedName);
+    if (!field) return { field: null, isFormula: false, usages: [], metadataRefs: [] };
+    const usages = this.getFieldUsages(qualifiedName, [
+      'field_read', 'field_write', 'field_soql_select', 'field_soql_filter',
+      'field_bind_lwc', 'field_bind_vf',
+    ]);
+    const metaEdges = this.queries.getIncomingEdges(field.id, ['field_metadata_ref']);
+    const metadataRefs = metaEdges.map((e) => {
+      const src = this.queries.getNodeById(e.source);
+      return {
+        name: src?.name ?? '(unknown)',
+        // Layout/ValidationRule carry the type in `signature`; a formula field
+        // reads as "Formula(<type>)".
+        type: src?.signature ?? (src?.kind === 'sobject_field' ? 'Formula' : 'Metadata'),
+        file: src?.filePath ?? '',
+      };
+    });
+    return {
+      field,
+      isFormula: (field.signature ?? '').startsWith('Formula'),
+      usages,
+      metadataRefs,
+    };
+  }
+
+  /**
    * Find circular dependencies in the codebase
    *
    * @returns Array of cycles, each cycle is an array of file paths
