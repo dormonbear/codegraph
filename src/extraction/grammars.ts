@@ -166,6 +166,16 @@ export function isLwcTemplate(filePath: string): boolean {
 }
 
 /**
+ * (viva-local) Salesforce SObject field metadata:
+ * `.../objects/<Object>/fields/<Field>.field-meta.xml`. Path-gated so only real
+ * field definitions route to the SObject schema extractor; other `.field-meta.xml`
+ * or generic `.xml` files keep their existing handling.
+ */
+export function isSObjectFieldMeta(filePath: string): boolean {
+  return /(?:^|\/)objects\/[^/]+\/fields\/[^/]+\.field-meta\.xml$/i.test(filePath);
+}
+
+/**
  * Play Framework routes file: the extensionless `conf/routes` (and included
  * `conf/*.routes`). No grammar — route extraction is done by the Play framework
  * resolver, so it's processed through the no-grammar (`yaml`-style) path.

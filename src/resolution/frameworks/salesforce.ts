@@ -127,14 +127,34 @@ function resolveRemoteActionCall(ref: UnresolvedRef, context: ResolutionContext)
   return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' };
 }
 
+/**
+ * viva-specific (project-local, NEVER upstream): resolve an Apex/SOQL SObject
+ * field usage to its `sobject_field` node. The extractor emits refs named
+ * `@field/Object.Field` (object already disambiguated from the SOQL FROM clause
+ * or the receiver's declared type). Map to the field node by qualifiedName
+ * `Object.Field`. The `@field/` sentinel guarantees only real field usages
+ * resolve, never a coincidental `obj.method` access.
+ */
+const FIELD_PREFIX = '@field/';
+function resolveSObjectFieldRef(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (!ref.referenceName.startsWith(FIELD_PREFIX)) return null;
+  const qualifiedName = ref.referenceName.slice(FIELD_PREFIX.length); // Object.Field
+  const target = context
+    .getNodesByQualifiedName(qualifiedName)
+    .find((n) => n.kind === 'sobject_field');
+  if (!target) return null;
+  return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' };
+}
+
 export const salesforceResolver: FrameworkResolver = {
   name: 'salesforce',
-  languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura'],
+  languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura', 'apex'],
 
   claimsReference(name: string): boolean {
-    // The `@remoteAction/...` sentinel has no node of that literal name, so the
-    // resolver must opt it past the "no possible match" pre-filter.
-    return name.startsWith(REMOTE_ACTION_PREFIX);
+    // The `@remoteAction/...` / `@field/...` sentinels have no node of that
+    // literal name, so the resolver must opt them past the "no possible match"
+    // pre-filter.
+    return name.startsWith(REMOTE_ACTION_PREFIX) || name.startsWith(FIELD_PREFIX);
   },
 
   detect(context: ResolutionContext): boolean {
@@ -146,6 +166,10 @@ export const salesforceResolver: FrameworkResolver = {
   },
 
   resolve(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+    // viva Apex/SOQL SObject field usage (`@field/Object.Field`).
+    const field = resolveSObjectFieldRef(ref, context);
+    if (field) return field;
+
     // viva React→Apex postMessage bridge (`@remoteAction/Class.method`).
     const remoteAction = resolveRemoteActionCall(ref, context);
     if (remoteAction) return remoteAction;

@@ -20,7 +20,7 @@ import {
   type WorktreeIndexMismatch,
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
-import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
+import type { Node, Edge, SearchResult, Subgraph, NodeKind, EdgeKind } from '../types';
 import { isTestFile } from '../search/query-utils';
 import {
   existsSync,
@@ -552,6 +552,42 @@ export const tools: ToolDefinition[] = [
       },
     },
   },
+  {
+    // (viva-local) Salesforce SObject field tools.
+    name: 'codegraph_field_search',
+    description: 'Salesforce: look up an SObject field by `Object__c.Field__c` — its data type / whether it is a formula or lookup, and a usage-count summary (read/write/SOQL). Object-disambiguated: pass the fully-qualified `Object.Field` so same-named fields on different objects stay distinct.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        field: {
+          type: 'string',
+          description: 'Fully-qualified field `Object.Field` (e.g. "Milestone__c.Editable_Amount__c")',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['field'],
+    },
+  },
+  {
+    name: 'codegraph_field_usages',
+    description: 'Salesforce: every code site that uses an SObject field `Object__c.Field__c`, each typed by how — field_read (Apex RHS), field_write (assignment / new SObject(F=...)), field_soql_select, field_soql_filter (WHERE/ORDER BY). Object-disambiguated, so `Milestone__c.Amount__c` excludes `Task__c.Amount__c`. The field-level analogue of codegraph_callers — use it to plan a "replace field A with field B" change.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        field: {
+          type: 'string',
+          description: 'Fully-qualified field `Object.Field` (e.g. "Milestone__c.Editable_Amount__c")',
+        },
+        kind: {
+          type: 'string',
+          description: 'Filter to one usage kind',
+          enum: ['read', 'write', 'soql'],
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['field'],
+    },
+  },
 ];
 
 /**
@@ -1038,6 +1074,10 @@ export class ToolHandler {
           return await this.handleStatus(args);
         case 'codegraph_files':
           result = await this.handleFiles(args); break;
+        case 'codegraph_field_search':
+          result = await this.handleFieldSearch(args); break;
+        case 'codegraph_field_usages':
+          result = await this.handleFieldUsages(args); break;
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -1194,6 +1234,78 @@ export class ToolHandler {
 
     const formatted = this.formatImpact(symbol, mergedImpact) + allMatches.note;
     return this.textResult(this.truncateOutput(formatted));
+  }
+
+  /**
+   * (viva-local) Handle codegraph_field_search — one SObject field's type +
+   * usage-count summary.
+   */
+  private async handleFieldSearch(args: Record<string, unknown>): Promise<ToolResult> {
+    const field = this.validateString(args.field, 'field');
+    if (typeof field !== 'string') return field;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const node = cg.getField(field);
+    if (!node) {
+      return this.textResult(`SObject field "${field}" not found. Pass a fully-qualified \`Object.Field\` (e.g. "Milestone__c.Editable_Amount__c").`);
+    }
+    const usages = cg.getFieldUsages(field);
+    const count = (k: string) => usages.filter((u) => u.kind === k).length;
+    const lines = [
+      `Field: ${node.qualifiedName}`,
+      `Type:  ${node.signature ?? 'Unknown'}`,
+      `Defined: ${node.filePath}`,
+      ``,
+      `Usages (${usages.length}): ` +
+        `read=${count('field_read')} write=${count('field_write')} ` +
+        `soql_select=${count('field_soql_select')} soql_filter=${count('field_soql_filter')}`,
+      ``,
+      `Use codegraph_field_usages "${field}" for the per-site list.`,
+    ];
+    return this.textResult(lines.join('\n'));
+  }
+
+  /**
+   * (viva-local) Handle codegraph_field_usages — per-site list, typed by kind.
+   */
+  private async handleFieldUsages(args: Record<string, unknown>): Promise<ToolResult> {
+    const field = this.validateString(args.field, 'field');
+    if (typeof field !== 'string') return field;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const kindArg = args.kind as string | undefined;
+    const kindFilter: EdgeKind[] | undefined =
+      kindArg === 'read' ? ['field_read'] :
+      kindArg === 'write' ? ['field_write'] :
+      kindArg === 'soql' ? ['field_soql_select', 'field_soql_filter'] :
+      undefined;
+
+    if (!cg.getField(field)) {
+      return this.textResult(`SObject field "${field}" not found. Pass a fully-qualified \`Object.Field\`.`);
+    }
+    const usages = cg.getFieldUsages(field, kindFilter);
+    if (usages.length === 0) {
+      return this.textResult(`No ${kindArg ? kindArg + ' ' : ''}usages found for "${field}".`);
+    }
+
+    const label: Record<string, string> = {
+      field_read: 'READ', field_write: 'WRITE',
+      field_soql_select: 'SOQL_SELECT', field_soql_filter: 'SOQL_FILTER',
+    };
+    // Group by file, then sort by line.
+    const byFile = new Map<string, Array<{ line: number; kind: EdgeKind }>>();
+    for (const u of usages) {
+      if (!byFile.has(u.file)) byFile.set(u.file, []);
+      byFile.get(u.file)!.push({ line: u.line, kind: u.kind });
+    }
+    const out: string[] = [`${usages.length} usage(s) of ${field}:`, ``];
+    for (const [file, sites] of [...byFile.entries()].sort()) {
+      out.push(file);
+      for (const s of sites.sort((a, b) => a.line - b.line || a.kind.localeCompare(b.kind))) {
+        out.push(`  ${label[s.kind] ?? s.kind} @ ${s.line}`);
+      }
+    }
+    return this.textResult(this.truncateOutput(out.join('\n')));
   }
 
   /**

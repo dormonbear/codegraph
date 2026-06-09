@@ -6744,4 +6744,65 @@ describe('Aura extraction + resolver', () => {
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
+
+  // viva-local (never upstream): SObject field usage / disambiguation.
+  it('indexes Apex/SOQL SObject field usages, object-disambiguated', async () => {
+    const dir = createTempDir();
+    try {
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      const mFields = path.join(dir, 'force-app/main/default/objects/Milestone__c/fields');
+      const tFields = path.join(dir, 'force-app/main/default/objects/Task__c/fields');
+      fs.mkdirSync(classes, { recursive: true });
+      fs.mkdirSync(mFields, { recursive: true });
+      fs.mkdirSync(tFields, { recursive: true });
+
+      const field = (name: string, type: string, formula?: string) =>
+        `<?xml version="1.0" encoding="UTF-8"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n` +
+        `    <fullName>${name}</fullName>\n    <type>${type}</type>\n` +
+        (formula ? `    <formula>${formula}</formula>\n` : ``) + `</CustomField>\n`;
+      fs.writeFileSync(path.join(mFields, 'Editable_Amount__c.field-meta.xml'), field('Editable_Amount__c', 'Currency'));
+      fs.writeFileSync(path.join(mFields, 'Amount__c.field-meta.xml'), field('Amount__c', 'Currency', 'Editable_Amount__c'));
+      fs.writeFileSync(path.join(tFields, 'Amount__c.field-meta.xml'), field('Amount__c', 'Currency'));
+
+      fs.writeFileSync(path.join(classes, 'Svc.cls'),
+        `public class Svc {\n` +
+        `  public void run(Task__c t) {\n` +
+        `    List<Milestone__c> ms = [SELECT Id, Editable_Amount__c FROM Milestone__c WHERE Editable_Amount__c > 0];\n` +
+        `    Milestone__c m = ms[0];\n` +
+        `    m.Editable_Amount__c = 5;\n` +
+        `    Decimal d = m.Editable_Amount__c;\n` +
+        `    Milestone__c x = new Milestone__c(Editable_Amount__c = 1);\n` +
+        `    Decimal taskAmt = t.Amount__c;\n` +
+        `    Decimal mAmt = m.Amount__c;\n` +
+        `  }\n}\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.cls', '**/*.field-meta.xml'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      // Field nodes exist with type signatures.
+      const ea = cg.getField('Milestone__c.Editable_Amount__c');
+      expect(ea?.signature).toBe('Currency');
+      expect(cg.getField('Milestone__c.Amount__c')?.signature).toBe('Formula(Currency)');
+
+      // Editable_Amount__c: SOQL select + filter, two writes (assignment + ctor), one read.
+      const usages = cg.getFieldUsages('Milestone__c.Editable_Amount__c');
+      const byKind = (k: string) => usages.filter((u) => u.kind === k).length;
+      expect(byKind('field_soql_select')).toBeGreaterThanOrEqual(1);
+      expect(byKind('field_soql_filter')).toBeGreaterThanOrEqual(1);
+      expect(byKind('field_write')).toBe(2);
+      expect(byKind('field_read')).toBe(1);
+
+      // Object disambiguation: Milestone__c.Amount__c read is `m.Amount__c` (NOT t.Amount__c).
+      const mAmt = cg.getFieldUsages('Milestone__c.Amount__c');
+      const tAmt = cg.getFieldUsages('Task__c.Amount__c');
+      expect(mAmt.filter((u) => u.kind === 'field_read').length).toBe(1);
+      expect(tAmt.filter((u) => u.kind === 'field_read').length).toBe(1);
+      // The two reads are on different lines — no cross-attribution.
+      expect(mAmt[0]!.line).not.toBe(tAmt[0]!.line);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
 });

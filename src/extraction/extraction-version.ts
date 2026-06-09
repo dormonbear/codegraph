@@ -27,4 +27,5 @@
 // v5: added LWC HTML template (lwc/*.html) extractor — template → <c-child> component.
 // v6: added Aura (.cmp/.app/.evt/.intf) extractor + Aura JS handlers + cmp.get("c.x") → Apex.
 // v7: (viva-local, never upstream) React→Apex postMessage bridge — remoteAction("Class.method").
-export const EXTRACTION_VERSION = 7;
+// v8: (viva-local, never upstream) SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
+export const EXTRACTION_VERSION = 8;

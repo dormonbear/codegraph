@@ -9,6 +9,7 @@ import * as path from 'path';
 import {
   Node,
   Edge,
+  EdgeKind,
   FileRecord,
   ExtractionResult,
   Subgraph,
@@ -970,6 +971,40 @@ export class CodeGraph {
    */
   getFileDependents(filePath: string): string[] {
     return this.graphManager.getFileDependents(filePath);
+  }
+
+  /**
+   * (viva-local) Look up a Salesforce SObject field node by `Object.Field`.
+   */
+  getField(qualifiedName: string): Node | null {
+    return (
+      this.queries
+        .getNodesByQualifiedNameExact(qualifiedName)
+        .find((n) => n.kind === 'sobject_field') ?? null
+    );
+  }
+
+  /**
+   * (viva-local) All code sites that use a Salesforce SObject field, typed by
+   * how (`field_read` / `field_write` / `field_soql_select` / `field_soql_filter`).
+   * Object-disambiguated: `Milestone__c.Amount__c` excludes `Task__c.Amount__c`.
+   *
+   * @param qualifiedName - `Object.Field` (e.g. `Milestone__c.Editable_Amount__c`)
+   * @param kinds - optional edge-kind filter (read/write/soql)
+   */
+  getFieldUsages(
+    qualifiedName: string,
+    kinds?: EdgeKind[]
+  ): Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }> {
+    const field = this.getField(qualifiedName);
+    if (!field) return [];
+    const fieldKinds: EdgeKind[] =
+      kinds ?? ['field_read', 'field_write', 'field_soql_select', 'field_soql_filter'];
+    const edges = this.queries.getIncomingEdges(field.id, fieldKinds);
+    return edges.map((e) => {
+      const from = this.queries.getNodeById(e.source);
+      return { file: from?.filePath ?? '', line: e.line ?? 0, kind: e.kind, from };
+    });
   }
 
   /**

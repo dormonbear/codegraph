@@ -38,6 +38,7 @@ export const NODE_KINDS = [
   'export',
   'route',
   'component',
+  'sobject_field',    // (viva-local) Salesforce SObject field, qualifiedName `Object.Field`
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -57,7 +58,12 @@ export type EdgeKind =
   | 'returns'         // Function returns type
   | 'instantiates'    // Creates instance of class
   | 'overrides'       // Method overrides parent method
-  | 'decorates';      // Decorator applied to symbol
+  | 'decorates'       // Decorator applied to symbol
+  // (viva-local) Salesforce SObject field usage edges — code site → sobject_field
+  | 'field_read'      // Apex reads a field (RHS/arg/return)
+  | 'field_write'     // Apex writes a field (assignment LHS, new SObject(F=...))
+  | 'field_soql_select' // SOQL SELECT names the field
+  | 'field_soql_filter'; // SOQL WHERE/ORDER BY names the field
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

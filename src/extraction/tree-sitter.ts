@@ -11,11 +11,12 @@ import {
   Node,
   Edge,
   NodeKind,
+  EdgeKind,
   ExtractionResult,
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, isSObjectFieldMeta } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import type { LanguageExtractor, ExtractorContext } from './tree-sitter-types';
 import { EXTRACTORS } from './languages';
@@ -24,6 +25,7 @@ import { RazorExtractor } from './razor-extractor';
 import { VisualforceExtractor } from './visualforce-extractor';
 import { LwcTemplateExtractor } from './lwc-template-extractor';
 import { AuraExtractor } from './aura-extractor';
+import { SObjectSchemaExtractor } from './sobject-schema-extractor';
 import { SvelteExtractor } from './svelte-extractor';
 import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
@@ -229,6 +231,9 @@ export class TreeSitterExtractor {
   // object literal whose members are handlers. Path-gated so only aura/ bundle
   // files get the object-literal handler treatment (no effect on other JS).
   private isAuraComponentJs: boolean;
+  // (viva-local) Apex method-scope variable → declared SObject type, used to
+  // object-disambiguate `var.Field__c` field accesses. Rebuilt per method.
+  private apexVarTypes: Map<string, string> = new Map();
 
   constructor(filePath: string, source: string, language?: Language) {
     this.filePath = filePath;
@@ -387,6 +392,11 @@ export class TreeSitterExtractor {
     if (this.language === 'pascal') {
       skipChildren = this.visitPascalNode(node);
       if (skipChildren) return;
+    }
+
+    // (viva-local) Apex SObject field usages (read/write/SOQL) → sobject_field.
+    if (this.language === 'apex') {
+      this.handleApexFieldUsage(node);
     }
 
     // Check for function declarations
@@ -2505,6 +2515,155 @@ export class TreeSitterExtractor {
   }
 
   /**
+   * (viva-local, NEVER upstream) Salesforce SObject field-usage extraction.
+   * Emits object-disambiguated field refs (`@field/Object.Field`, sentinel
+   * claimed only by the salesforce resolver) to `sobject_field` nodes:
+   *  - SOQL SELECT → field_soql_select, WHERE/ORDER BY → field_soql_filter,
+   *    object from the FROM clause (free disambiguation).
+   *  - Apex `var.Field__c` → field_read / `var.Field__c = …` → field_write,
+   *    object from var's declared type (apexVarTypes, rebuilt per method).
+   *  - `new Obj(Field = …)` constructor args → field_write.
+   * HIGH-PRECISION only: a field is attributed ONLY when its object is
+   * statically known. Relationship paths (`a__r.b__c`) are left to P2.
+   */
+  private handleApexFieldUsage(node: SyntaxNode): void {
+    const t = node.type;
+    if (t === 'method_declaration' || t === 'constructor_declaration' || t === 'trigger_declaration') {
+      this.buildApexVarTypes(node);
+    } else if (t === 'query_expression') {
+      this.extractSoqlFields(node);
+    } else if (t === 'object_creation_expression') {
+      this.extractApexConstructorFields(node);
+    } else if (t === 'field_access') {
+      this.extractApexFieldAccess(node);
+    }
+  }
+
+  /** Map a method's local vars + params → their declared (single) type name. */
+  private buildApexVarTypes(methodNode: SyntaxNode): void {
+    this.apexVarTypes = new Map();
+    const typeName = (typeNode: SyntaxNode | null): string | null =>
+      typeNode && typeNode.type === 'type_identifier' ? getNodeText(typeNode, this.source) : null;
+    const stack: SyntaxNode[] = [methodNode];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (n.type === 'formal_parameter' || n.type === 'enhanced_for_statement') {
+        // formal_parameter: `Type name`; enhanced_for_statement: `for (Type v : …)`
+        // both expose the typed binding as namedChild(0)=type, namedChild(1)=name.
+        const ty = typeName(n.namedChild(0));
+        const id = n.namedChild(1);
+        if (ty && id && id.type === 'identifier') this.apexVarTypes.set(getNodeText(id, this.source), ty);
+      } else if (n.type === 'local_variable_declaration') {
+        const ty = typeName(n.namedChild(0));
+        if (ty) {
+          for (let i = 1; i < n.namedChildCount; i++) {
+            const vd = n.namedChild(i);
+            if (vd?.type === 'variable_declarator') {
+              const id = vd.namedChild(0);
+              if (id?.type === 'identifier') this.apexVarTypes.set(getNodeText(id, this.source), ty);
+            }
+          }
+        }
+      }
+      for (let i = 0; i < n.namedChildCount; i++) stack.push(n.namedChild(i)!);
+    }
+  }
+
+  /** Collect simple (non-relationship) SOQL field identifiers under a clause, not
+   * descending into nested subquery `query_expression`s (they own their object).
+   * Returns the `identifier` node so the edge lands on the field's own line. */
+  private collectSoqlFieldNames(node: SyntaxNode, out: SyntaxNode[]): void {
+    if (node.type === 'query_expression') return;
+    if (node.type === 'field_identifier') {
+      const inner = node.namedChild(0);
+      if (inner && inner.type === 'identifier') out.push(inner);
+      return; // dotted_identifier (relationship path) skipped in P1
+    }
+    for (let i = 0; i < node.namedChildCount; i++) this.collectSoqlFieldNames(node.namedChild(i)!, out);
+  }
+
+  private extractSoqlFields(queryNode: SyntaxNode): void {
+    // query_expression > soql_query_body > { select_clause, from_clause, ... }
+    let body: SyntaxNode | null = null;
+    for (let i = 0; i < queryNode.namedChildCount; i++) {
+      const c = queryNode.namedChild(i)!;
+      if (c.type === 'soql_query_body') { body = c; break; }
+    }
+    if (!body) return;
+    let object: string | null = null;
+    let selectClause: SyntaxNode | null = null;
+    const filterClauses: SyntaxNode[] = [];
+    for (let i = 0; i < body.namedChildCount; i++) {
+      const c = body.namedChild(i)!;
+      if (c.type === 'from_clause') {
+        const storage = c.namedChild(0);
+        const id = storage?.namedChild(0);
+        if (id) object = getNodeText(id, this.source);
+      } else if (c.type === 'select_clause') {
+        selectClause = c;
+      } else if (c.type === 'where_clause' || c.type === 'order_by_clause' || c.type === 'group_by_clause') {
+        filterClauses.push(c);
+      }
+    }
+    if (!object) return;
+    if (selectClause) {
+      const sel: SyntaxNode[] = [];
+      this.collectSoqlFieldNames(selectClause, sel);
+      for (const f of sel) this.emitFieldRef(object, getNodeText(f, this.source), 'field_soql_select', f);
+    }
+    for (const fc of filterClauses) {
+      const fs: SyntaxNode[] = [];
+      this.collectSoqlFieldNames(fc, fs);
+      for (const f of fs) this.emitFieldRef(object, getNodeText(f, this.source), 'field_soql_filter', f);
+    }
+  }
+
+  private extractApexFieldAccess(node: SyntaxNode): void {
+    const recv = node.namedChild(0);
+    const prop = node.namedChild(node.namedChildCount - 1);
+    if (!recv || !prop || recv.type !== 'identifier' || prop.type !== 'identifier') return;
+    const objType = this.apexVarTypes.get(getNodeText(recv, this.source));
+    if (!objType) return;
+    const field = getNodeText(prop, this.source);
+    // Write when this field_access is the assignment LHS; else read.
+    const parent = node.parent;
+    const isWrite = parent?.type === 'assignment_expression' && parent.namedChild(0)?.id === node.id;
+    this.emitFieldRef(objType, field, isWrite ? 'field_write' : 'field_read', node);
+  }
+
+  private extractApexConstructorFields(node: SyntaxNode): void {
+    let typeName: string | null = null;
+    let args: SyntaxNode | null = null;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i)!;
+      if (c.type === 'type_identifier' && !typeName) typeName = getNodeText(c, this.source);
+      else if (c.type === 'argument_list') args = c;
+    }
+    if (!typeName || !args) return;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const a = args.namedChild(i)!;
+      if (a.type === 'assignment_expression') {
+        const lhs = a.namedChild(0);
+        if (lhs?.type === 'identifier') {
+          this.emitFieldRef(typeName, getNodeText(lhs, this.source), 'field_write', a);
+        }
+      }
+    }
+  }
+
+  private emitFieldRef(objectType: string, field: string, kind: EdgeKind, node: SyntaxNode): void {
+    const fromId = this.nodeStack[this.nodeStack.length - 1];
+    if (!fromId) return;
+    this.unresolvedReferences.push({
+      fromNodeId: fromId,
+      referenceName: `@field/${objectType}.${field}`,
+      referenceKind: kind,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
+  }
+
+  /**
    * `new Foo(...)` / `Foo::new(...)` / object_creation_expression —
    * emit an `instantiates` reference to the class name. The resolver
    * then links it to the class node, producing the `instantiates`
@@ -2931,6 +3090,10 @@ export class TreeSitterExtractor {
 
     const visitForCallsAndStructure = (node: SyntaxNode): void => {
       const nodeType = node.type;
+
+      // (viva-local) Apex SObject field usages live in method BODIES, which are
+      // walked here (not via visitNode), so the field hook must run here too.
+      if (this.language === 'apex') this.handleApexFieldUsage(node);
 
       // Rocket route-registration macros (`routes![…]` / `catchers![…]`): the
       // handler paths live in a raw token tree the call walker can't see.
@@ -4232,6 +4395,11 @@ export function extractFromSource(
   } else if (detectedLanguage === 'aura') {
     // Custom extractor for Aura component markup (.cmp/.app/.evt/.intf)
     const extractor = new AuraExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (isSObjectFieldMeta(filePath)) {
+    // (viva-local) Salesforce SObject field metadata (objects/*/fields/*.field-meta.xml)
+    // → one sobject_field node. Checked before the generic xml branch.
+    const extractor = new SObjectSchemaExtractor(filePath, source);
     result = extractor.extract();
   } else if (detectedLanguage === 'xml') {
     // Custom extractor for MyBatis mapper XML. Non-mapper XML returns just a
