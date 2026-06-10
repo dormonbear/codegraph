@@ -11,6 +11,11 @@
     "type": "git",
     "url": "git+https://github.com/dormonbear/codegraph.git"
   },
+  "forkedFrom": {
+    "package": "@colbymchenry/codegraph",
+    "upstreamVersion": "0.9.9",
+    "upstreamCommit": "471084d"
+  },
   "files": [
     "dist",
     "scripts",

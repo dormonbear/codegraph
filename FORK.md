@@ -53,22 +53,47 @@ npm install
 npm test                         # full vitest suite must stay green
 ```
 
-After merging, bump `EXTRACTION_VERSION` in `src/extraction/extraction-version.ts`
-**only if** upstream's extraction logic changed in a way that invalidates cached indexes.
+After merging:
+
+1. Bump `EXTRACTION_VERSION` in `src/extraction/extraction-version.ts` **only if**
+   upstream's extraction logic changed in a way that invalidates cached indexes.
+2. Update the `forkedFrom` field in `package.json` to the new upstream base
+   (`upstreamVersion` = upstream's `package.json` version, `upstreamCommit` = the
+   merged upstream commit). This is the only record of "which upstream am I on" —
+   the published version number is independent (see below).
+
+## Versioning policy
+
+`codegraph-sf` uses its **own independent SemVer line**, decoupled from upstream's
+version number. Bump by what the change means to a *consumer*, regardless of whether
+it came from your Salesforce work or a merged-upstream change:
+
+| This release contains | bump |
+|---|---|
+| upstream bugfix / your fix | patch |
+| upstream feature / your feature | minor |
+| breaking change (either side) | major |
+
+Do **not** mirror upstream's number or use a `-sf` prerelease suffix — npm would treat
+`X.Y.Z-sf.N` as a prerelease (excluded from `^` ranges) and you'd lose normal SemVer
+semantics for your own breaking changes. The upstream base is tracked in `forkedFrom`
+(queryable: `npm view codegraph-sf forkedFrom`), not in the version string.
 
 ## Publish a new version
 
-This fork ships as a **plain npm package** (no bundled-runtime release workflow — that
-upstream machinery is not used). The `prepare` hook builds `dist/` on install/publish.
+Publishing is automated by `.github/workflows/npm-publish.yml` via npm **Trusted
+Publishing (OIDC)** — no stored npm token. The `prepare` hook builds `dist/` on publish.
 
 ```bash
-# 1. bump version in package.json (independent of upstream's version)
-# 2. update CHANGELOG if you keep one
-npm test
-npm publish                      # unscoped public package → publishes publicly
+# 1. bump "version" in package.json per the policy above
+# 2. resync the lock:  npm install --package-lock-only --ignore-scripts
+# 3. commit, then tag — the tag MUST equal package.json's version
+git commit -am "chore: release vX.Y.Z"
+git tag vX.Y.Z && git push origin salesforce vX.Y.Z
 ```
 
-Requires `npm login` as the account that owns the `codegraph-sf` name. Node 20–24.
+The workflow verifies the tag matches `package.json`, runs the suite, and publishes.
+A manual run is also available from the Actions tab (`workflow_dispatch`). Node 20–24.
 
 ## What must never change on sync
 
