@@ -21,14 +21,18 @@
  * turns the re-index hint into noise — keep it honest (see CLAUDE.md, "Honesty
  * in the product is load-bearing").
  */
+// Fork note: upstream's counter independently reached 14; this fork's Salesforce
+// extraction added the shapes below (its own v2–v11 line). On each upstream merge,
+// set this ABOVE both lineages (here: 15) so every existing index re-builds.
 // v2: added Salesforce Apex (.cls/.trigger/.apex) language extractor.
 // v3: added Salesforce resolver — LWC/Aura JS → Apex method (@salesforce/apex import).
 // v4: added Visualforce (.page/.component) extractor — page → controller/extensions/<c:comp>.
 // v5: added LWC HTML template (lwc/*.html) extractor — template → <c-child> component.
 // v6: added Aura (.cmp/.app/.evt/.intf) extractor + Aura JS handlers + cmp.get("c.x") → Apex.
-// v7: (viva-local, never upstream) React→Apex postMessage bridge — remoteAction("Class.method").
-// v8: (viva-local, never upstream) SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
-// v9: (viva-local, never upstream) P2 relationship-path field resolution — `A__r.B__c` in Apex + SOQL.
-// v10: (viva-local, never upstream) P3 cross-layer LWC field binds — lightning-input-field → sobject_field.
-// v11: (viva-local, never upstream) P4 field metadata refs — Layout/ValidationRule/formula → sobject_field (field_impact).
-export const EXTRACTION_VERSION = 11;
+// v7: React→Apex postMessage bridge — remoteAction("Class.method").
+// v8: SObject field layer — sobject_field nodes + Apex/SOQL field read/write/select/filter edges.
+// v9: P2 relationship-path field resolution — `A__r.B__c` in Apex + SOQL.
+// v10: P3 cross-layer LWC field binds — lightning-input-field → sobject_field.
+// v11: P4 field metadata refs — Layout/ValidationRule/formula → sobject_field (field_impact).
+// v15: merged upstream main (was at 14) into the Salesforce fork.
+export const EXTRACTION_VERSION = 15;
