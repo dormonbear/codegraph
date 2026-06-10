@@ -1,3 +1,23 @@
+# codegraph-sf — CodeGraph for the Salesforce stack
+
+> A fork of [`@colbymchenry/codegraph`](https://www.npmjs.com/package/@colbymchenry/codegraph) that adds first-class indexing for the **whole Salesforce stack** and tracks upstream.
+
+```bash
+npm install -g codegraph-sf      # ships the `codegraph` CLI + MCP server
+cd your-sfdx-project && codegraph init -i
+```
+
+**What this fork adds on top of upstream:**
+
+- **Cross-layer Salesforce graph** — Apex (`.cls`/`.trigger`), Visualforce, Aura, and LWC (`.js`/`.html`) linked end-to-end to the Apex they call.
+- **React ↔ Apex bridge** — indexes `remoteAction("Class.method", …)` / `useRemoteActionQuery(["Class.method"])` postMessage calls so React apps link to the Apex they invoke.
+- **SObject field layer** — every `Object__c.Field__c` with its Apex read/write, SOQL select/filter, and LWC bind usages, plus declarative references (Page Layouts, Validation Rules, formula fields) that grep misses. Exposed via `codegraph_field_search` / `codegraph_field_usages` / `codegraph_field_impact` MCP tools, object-disambiguated (`Milestone__c.Amount__c` never collides with `Task__c.Amount__c`).
+- **Name-match noise fix** — JS/Python builtins (`.replace()`, `.resolve()`) no longer falsely link to same-named Apex methods.
+
+The `codegraph` CLI/MCP command name is **unchanged** from upstream, so existing MCP configs keep working — just install this package instead of the public one. Everything below is the upstream README. Maintainers: see [`FORK.md`](FORK.md) for the upstream-sync + publish workflow.
+
+---
+
 <div align="center">
 
 # CodeGraph

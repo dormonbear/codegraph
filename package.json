@@ -1,11 +1,15 @@
 {
-  "name": "@colbymchenry/codegraph",
-  "version": "0.9.9",
-  "description": "Supercharge Claude Code with semantic code intelligence. 94% fewer tool calls • 77% faster exploration • 100% local.",
+  "name": "codegraph-sf",
+  "version": "0.1.0",
+  "description": "CodeGraph for the Salesforce stack — a fork that indexes Apex/Visualforce/Aura/LWC + React↔Apex postMessage bridges and an SObject field-usage/impact layer (Layouts, Validation Rules, formulas). Tracks @colbymchenry/codegraph upstream.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
     "codegraph": "./dist/bin/codegraph.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dormonbear/codegraph.git"
   },
   "files": [
     "dist",
@@ -28,7 +32,12 @@
   "keywords": [
     "code-intelligence",
     "knowledge-graph",
-    "static-analysis"
+    "static-analysis",
+    "salesforce",
+    "apex",
+    "lwc",
+    "sobject",
+    "mcp"
   ],
   "author": "",
   "license": "MIT",
