@@ -1,0 +1,83 @@
+name: Sync upstream
+
+# Daily: merge colbymchenry/codegraph main into a sync branch and open a PR.
+# Never auto-merges to `salesforce` and never publishes — a human reviews the PR,
+# bumps the version + forkedFrom per FORK.md, and tags to release.
+
+on:
+  schedule:
+    - cron: '0 16 * * *'   # daily ~16:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    # don't run on forks of this fork
+    if: github.repository == 'dormonbear/codegraph'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: salesforce
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/colbymchenry/codegraph.git
+          git fetch upstream main
+
+      - name: Merge and open PR (or issue on conflict)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          BEHIND=$(git rev-list --count salesforce..upstream/main)
+          if [ "$BEHIND" = "0" ]; then
+            echo "Up to date with upstream — nothing to sync."
+            exit 0
+          fi
+          echo "$BEHIND new upstream commit(s)."
+
+          git checkout -B sync/upstream salesforce
+          if git merge --no-edit upstream/main; then
+            git push --force origin sync/upstream
+            printf '%s\n' \
+              "Automated daily upstream sync — merged upstream/main cleanly ($BEHIND new commit(s))." \
+              "" \
+              "Before releasing: review the diff, then bump version + forkedFrom per FORK.md and tag." \
+              > /tmp/body.md
+            OPEN=$(gh pr list --head sync/upstream --state open --json number --jq 'length')
+            if [ "$OPEN" = "0" ]; then
+              gh pr create --base salesforce --head sync/upstream \
+                --title "Sync upstream ($BEHIND commit(s))" --body-file /tmp/body.md
+            else
+              echo "PR already open — branch force-updated."
+            fi
+          else
+            CONFLICTS=$(git diff --name-only --diff-filter=U)
+            git merge --abort
+            printf '%s\n' \
+              "Daily auto-sync hit merge conflicts ($BEHIND upstream commit(s) ahead). Resolve locally:" \
+              "" \
+              "    git fetch upstream && git merge upstream/main" \
+              "" \
+              "Conflicting files:" \
+              "$CONFLICTS" \
+              > /tmp/body.md
+            TITLE="Upstream sync needs manual merge"
+            OPEN=$(gh issue list --search "$TITLE in:title" --state open --json number --jq 'length')
+            if [ "$OPEN" = "0" ]; then
+              gh issue create --title "$TITLE" --body-file /tmp/body.md
+            else
+              echo "Conflict issue already open."
+            fi
+          fi
