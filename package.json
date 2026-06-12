@@ -1,6 +1,6 @@
 {
   "name": "codegraph-sf",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "CodeGraph for the Salesforce stack — a fork that indexes Apex/Visualforce/Aura/LWC + React↔Apex postMessage bridges and an SObject field-usage/impact layer (Layouts, Validation Rules, formulas). Tracks @colbymchenry/codegraph upstream.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,7 +14,7 @@
   "forkedFrom": {
     "package": "@colbymchenry/codegraph",
     "upstreamVersion": "0.9.9",
-    "upstreamCommit": "16c73e2"
+    "upstreamCommit": "7db4c1d"
   },
   "files": [
     "dist",
