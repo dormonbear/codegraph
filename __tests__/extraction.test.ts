@@ -7448,6 +7448,69 @@ describe('Aura extraction + resolver', () => {
     } finally { cleanupTempDir(dir); }
   });
 
+  // viva-local (never upstream): SObject OBJECT layer — node + usages + impact.
+  it('indexes SObject object usages (SOQL/DML/type/trigger) + impact roll-up', async () => {
+    const dir = createTempDir();
+    try {
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      const triggers = path.join(dir, 'force-app/main/default/triggers');
+      const objDir = path.join(dir, 'force-app/main/default/objects/Milestone__c');
+      const mFields = path.join(objDir, 'fields');
+      const layouts = path.join(dir, 'force-app/main/default/layouts');
+      fs.mkdirSync(classes, { recursive: true });
+      fs.mkdirSync(triggers, { recursive: true });
+      fs.mkdirSync(mFields, { recursive: true });
+      fs.mkdirSync(layouts, { recursive: true });
+
+      // Object definition → sobject node.
+      fs.writeFileSync(path.join(objDir, 'Milestone__c.object-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n<label>Milestone</label>\n</CustomObject>\n`);
+      // Two fields (for the impact roll-up).
+      const field = (name: string, type: string) =>
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>${name}</fullName>\n<type>${type}</type>\n</CustomField>\n`;
+      fs.writeFileSync(path.join(mFields, 'Amount__c.field-meta.xml'), field('Amount__c', 'Currency'));
+      fs.writeFileSync(path.join(mFields, 'Name__c.field-meta.xml'), field('Name__c', 'Text'));
+      // Layout → object_metadata_ref (object from filename prefix).
+      fs.writeFileSync(path.join(layouts, 'Milestone__c-Milestone Layout.layout-meta.xml'),
+        `<?xml version="1.0"?>\n<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n<field>Amount__c</field>\n</Layout>\n`);
+
+      fs.writeFileSync(path.join(classes, 'Svc.cls'),
+        `public class Svc {\n` +
+        `  public void run() {\n` +
+        `    List<Milestone__c> ms = [SELECT Id, Amount__c FROM Milestone__c];\n` + // soql_from + type_ref (generic arg)
+        `    Milestone__c m = new Milestone__c(Amount__c = 1);\n` + // type_ref (decl) + type_ref (ctor)
+        `    insert m;\n` + // object_dml
+        `  }\n}\n`);
+      fs.writeFileSync(path.join(triggers, 'MilestoneTrigger.trigger'),
+        `trigger MilestoneTrigger on Milestone__c (before insert) {\n}\n`); // object_type_ref (trigger)
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.cls', '**/*.trigger', '**/*.field-meta.xml', '**/*.object-meta.xml', '**/*.layout-meta.xml'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      // Object node exists, classified Custom Object.
+      const obj = cg.getObject('Milestone__c');
+      expect(obj?.kind).toBe('sobject');
+      expect(obj?.signature).toBe('Custom Object');
+
+      // Usages by kind.
+      const usages = cg.getObjectUsages('Milestone__c');
+      const byKind = (k: string) => usages.filter((u) => u.kind === k).length;
+      expect(byKind('object_soql_from')).toBe(1);
+      expect(byKind('object_dml')).toBe(1);
+      expect(byKind('object_type_ref')).toBeGreaterThanOrEqual(2); // trigger + decl/ctor/generic
+      expect(byKind('object_metadata_ref')).toBe(1); // the Layout
+
+      // Impact roll-up: both fields owned, with the Layout as a metadata ref.
+      const impact = cg.getObjectImpact('Milestone__c');
+      expect(impact.fields.map((f) => f.qualifiedName).sort()).toEqual(['Milestone__c.Amount__c', 'Milestone__c.Name__c']);
+      expect(impact.metadataRefs.some((r) => r.type === 'Layout')).toBe(true);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
+
   // viva-local (never upstream): P3 cross-layer LWC field binds.
   it('binds LWC lightning-input-field to its SObject field, form-disambiguated', async () => {
     const dir = createTempDir();

@@ -120,6 +120,24 @@ export class VisualforceExtractor {
         if (name) this.pushRef(componentId, name, line);
       }
     }
+    // (viva-local) `standardController="Account"` names an SObject, not an Apex
+    // class — historically left unlinked. With an `sobject` node it now resolves
+    // (object_schema_ref), so object_impact flags the VF page that binds it.
+    const std = this.source.match(/standardController\s*=\s*"([^"]+)"/i);
+    if (std && std[1]) {
+      const name = std[1].trim();
+      if (name) {
+        this.unresolvedReferences.push({
+          fromNodeId: componentId,
+          referenceName: `@object/${name}`,
+          referenceKind: 'object_schema_ref',
+          line: this.lineAt(std.index ?? 0),
+          column: 0,
+          filePath: this.filePath,
+          language: 'visualforce',
+        });
+      }
+    }
   }
 
   /**

@@ -39,6 +39,7 @@ export const NODE_KINDS = [
   'route',
   'component',
   'sobject_field',    // (viva-local) Salesforce SObject field, qualifiedName `Object.Field`
+  'sobject',          // (viva-local) Salesforce SObject (object), qualifiedName `Object` (e.g. `Account`, `Foo__c`)
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -66,7 +67,13 @@ export type EdgeKind =
   | 'field_soql_filter' // SOQL WHERE/ORDER BY names the field
   | 'field_bind_lwc'  // LWC lightning-input/output-field binds the field
   | 'field_bind_vf'   // Visualforce apex:inputField/outputField binds the field
-  | 'field_metadata_ref'; // declarative metadata (Layout/ValidationRule/formula) references the field
+  | 'field_metadata_ref' // declarative metadata (Layout/ValidationRule/formula) references the field
+  // (viva-local) Salesforce SObject (object) usage edges — code/metadata site → sobject
+  | 'object_soql_from'   // SOQL FROM names the object
+  | 'object_dml'         // Apex DML (insert/update/delete/upsert/undelete/merge) on the object
+  | 'object_type_ref'    // Apex type usage: List<Obj>, Obj var, (Obj) cast, new Obj(), Obj.SObjectType
+  | 'object_schema_ref'  // LWC/Aura @salesforce/schema/Obj import, VF standardController
+  | 'object_metadata_ref'; // declarative metadata (Layout/VR/Flow/PermSet/RecordType/Trigger) references the object
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

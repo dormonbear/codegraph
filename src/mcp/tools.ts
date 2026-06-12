@@ -647,6 +647,48 @@ export const tools: ToolDefinition[] = [
       required: ['field'],
     },
   },
+  {
+    // (viva-local) Salesforce SObject (object) tools.
+    name: 'codegraph_object_search',
+    description: 'Salesforce: look up an SObject (object) by API name (e.g. "Account", "Milestone__c") — its kind (Custom Object / Standard Object / Custom Setting / Custom Metadata Type / Platform Event), field count, and a usage-count summary (SOQL / DML / type refs / metadata).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        object: { type: 'string', description: 'Object API name (e.g. "Milestone__c", "Account")' },
+        projectPath: projectPathProperty,
+      },
+      required: ['object'],
+    },
+  },
+  {
+    name: 'codegraph_object_usages',
+    description: 'Salesforce: every site that uses an SObject, each typed by how — object_soql_from (SOQL `FROM Obj`), object_dml (insert/update/delete/upsert), object_type_ref (`List<Obj>`, `new Obj()`, `trigger on Obj`), object_schema_ref (LWC `@salesforce/schema`, VF standardController), object_metadata_ref (Layout/Validation Rule). The object-level analogue of codegraph_callers.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        object: { type: 'string', description: 'Object API name (e.g. "Milestone__c", "Account")' },
+        kind: {
+          type: 'string',
+          description: 'Filter to one usage kind',
+          enum: ['soql', 'dml', 'type', 'schema', 'metadata'],
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['object'],
+    },
+  },
+  {
+    name: 'codegraph_object_impact',
+    description: 'Salesforce: blast radius of renaming, retyping, or DELETING an SObject — its code usages (SOQL/DML/type refs) PLUS the declarative metadata that references it (Page Layouts, Validation Rules) AND every field it owns with each field\'s own usage count rolled up. Deleting an object cascades to all its fields, triggers, and layouts — far wider than a single field. The object analogue of codegraph_impact; run it before any object rename/delete.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        object: { type: 'string', description: 'Object API name (e.g. "Milestone__c", "Account")' },
+        projectPath: projectPathProperty,
+      },
+      required: ['object'],
+    },
+  },
 ];
 
 /**
@@ -690,7 +732,11 @@ export function getStaticTools(): ToolDefinition[] {
 // they are this fork's entire reason to exist, so they must be LISTED by
 // default (upstream's trim would otherwise hide them). files/status stay cut,
 // following upstream's evidence-based decision above.
-const DEFAULT_MCP_TOOLS = new Set(['explore', 'node', 'search', 'callers', 'field_search', 'field_usages', 'field_impact']);
+const DEFAULT_MCP_TOOLS = new Set([
+  'explore', 'node', 'search', 'callers',
+  'field_search', 'field_usages', 'field_impact',
+  'object_search', 'object_usages', 'object_impact',
+]);
 
 /**
  * Tool handler that executes tools against a CodeGraph instance
@@ -1180,6 +1226,12 @@ export class ToolHandler {
           result = await this.handleFieldUsages(args); break;
         case 'codegraph_field_impact':
           result = await this.handleFieldImpact(args); break;
+        case 'codegraph_object_search':
+          result = await this.handleObjectSearch(args); break;
+        case 'codegraph_object_usages':
+          result = await this.handleObjectUsages(args); break;
+        case 'codegraph_object_impact':
+          result = await this.handleObjectImpact(args); break;
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -1603,6 +1655,120 @@ export class ToolHandler {
       }
     }
     out.push(``, `Use codegraph_field_usages "${field}" for the per-site code list.`);
+    return this.textResult(this.truncateOutput(out.join('\n')));
+  }
+
+  /** (viva-local) Handle codegraph_object_search — one object's kind + usage summary. */
+  private async handleObjectSearch(args: Record<string, unknown>): Promise<ToolResult> {
+    const object = this.validateString(args.object, 'object');
+    if (typeof object !== 'string') return object;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const node = cg.getObject(object);
+    if (!node) {
+      return this.textResult(`SObject "${object}" not found. Pass the object API name (e.g. "Milestone__c", "Account"). It must have an objects/<Object>/<Object>.object-meta.xml.`);
+    }
+    const usages = cg.getObjectUsages(object);
+    const count = (k: string) => usages.filter((u) => u.kind === k).length;
+    const impact = cg.getObjectImpact(object);
+    const lines = [
+      `Object: ${node.qualifiedName}`,
+      `Kind:   ${node.signature ?? 'Unknown'}`,
+      `Fields: ${impact.fields.length}`,
+      `Defined: ${node.filePath}`,
+      ``,
+      `Usages (${usages.length}): ` +
+        `soql_from=${count('object_soql_from')} dml=${count('object_dml')} ` +
+        `type_ref=${count('object_type_ref')} schema_ref=${count('object_schema_ref')} ` +
+        `metadata=${count('object_metadata_ref')}`,
+      ``,
+      `Use codegraph_object_usages "${object}" for the per-site list, or codegraph_object_impact "${object}" for the full blast radius (fields + metadata).`,
+    ];
+    return this.textResult(lines.join('\n'));
+  }
+
+  /** (viva-local) Handle codegraph_object_usages — per-site list, typed by kind. */
+  private async handleObjectUsages(args: Record<string, unknown>): Promise<ToolResult> {
+    const object = this.validateString(args.object, 'object');
+    if (typeof object !== 'string') return object;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const kindArg = args.kind as string | undefined;
+    const kindFilter: EdgeKind[] | undefined =
+      kindArg === 'soql' ? ['object_soql_from'] :
+      kindArg === 'dml' ? ['object_dml'] :
+      kindArg === 'type' ? ['object_type_ref'] :
+      kindArg === 'schema' ? ['object_schema_ref'] :
+      kindArg === 'metadata' ? ['object_metadata_ref'] :
+      undefined;
+
+    if (!cg.getObject(object)) {
+      return this.textResult(`SObject "${object}" not found. Pass the object API name (e.g. "Milestone__c", "Account").`);
+    }
+    const usages = cg.getObjectUsages(object, kindFilter);
+    if (usages.length === 0) {
+      return this.textResult(`No ${kindArg ? kindArg + ' ' : ''}usages found for "${object}".`);
+    }
+
+    const label: Record<string, string> = {
+      object_soql_from: 'SOQL_FROM', object_dml: 'DML', object_type_ref: 'TYPE_REF',
+      object_schema_ref: 'SCHEMA_REF', object_metadata_ref: 'METADATA_REF',
+    };
+    const byFile = new Map<string, Array<{ line: number; kind: EdgeKind }>>();
+    for (const u of usages) {
+      if (!byFile.has(u.file)) byFile.set(u.file, []);
+      byFile.get(u.file)!.push({ line: u.line, kind: u.kind });
+    }
+    const out: string[] = [`${usages.length} usage(s) of ${object}:`, ``];
+    for (const [file, sites] of [...byFile.entries()].sort()) {
+      out.push(file);
+      for (const s of sites.sort((a, b) => a.line - b.line || a.kind.localeCompare(b.kind))) {
+        out.push(`  ${label[s.kind] ?? s.kind} @ ${s.line}`);
+      }
+    }
+    return this.textResult(this.truncateOutput(out.join('\n')));
+  }
+
+  /** (viva-local) Handle codegraph_object_impact — code usages + metadata + fields roll-up. */
+  private async handleObjectImpact(args: Record<string, unknown>): Promise<ToolResult> {
+    const object = this.validateString(args.object, 'object');
+    if (typeof object !== 'string') return object;
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const impact = cg.getObjectImpact(object);
+    if (!impact.object) {
+      return this.textResult(`SObject "${object}" not found. Pass the object API name (e.g. "Milestone__c", "Account").`);
+    }
+    const count = (k: string) => impact.usages.filter((u) => u.kind === k).length;
+    const out: string[] = [
+      `Impact of renaming/removing ${impact.object.qualifiedName} (${impact.kind})`,
+      ``,
+      `Code usages (${impact.usages.length}): ` +
+        `soql_from=${count('object_soql_from')} dml=${count('object_dml')} ` +
+        `type_ref=${count('object_type_ref')} schema_ref=${count('object_schema_ref')}`,
+    ];
+    if (impact.metadataRefs.length === 0) {
+      out.push(``, `Metadata references: none detected (Layouts / Validation Rules).`);
+    } else {
+      out.push(``, `⚠ Metadata references (${impact.metadataRefs.length}) — silent breakers on a rename / delete:`);
+      const byType = new Map<string, string[]>();
+      for (const r of impact.metadataRefs) {
+        if (!byType.has(r.type)) byType.set(r.type, []);
+        byType.get(r.type)!.push(r.name);
+      }
+      for (const [type, names] of [...byType.entries()].sort()) {
+        out.push(`  ${type}: ${[...new Set(names)].sort().join(', ')}`);
+      }
+    }
+    if (impact.fields.length > 0) {
+      const totalFieldUsages = impact.fields.reduce((s, f) => s + f.usageCount, 0);
+      out.push(``, `⚠ Owns ${impact.fields.length} field(s) (${totalFieldUsages} field-usage site(s)) — all deleted with the object:`);
+      for (const f of impact.fields.slice(0, 30)) {
+        out.push(`  ${f.qualifiedName.split('.').slice(1).join('.')} [${f.signature}] — ${f.usageCount} usage(s)`);
+      }
+      if (impact.fields.length > 30) out.push(`  …and ${impact.fields.length - 30} more`);
+    }
+    out.push(``, `Use codegraph_object_usages "${object}" for the per-site code list, codegraph_field_impact for a specific field.`);
     return this.textResult(this.truncateOutput(out.join('\n')));
   }
 

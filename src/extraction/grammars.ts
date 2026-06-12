@@ -177,6 +177,15 @@ export function isSObjectFieldMeta(filePath: string): boolean {
 }
 
 /**
+ * (viva-local) A Salesforce SObject (object) definition:
+ * `.../objects/<Object>/<Object>.object-meta.xml`. Path-gated so only real object
+ * definitions route to the SObject object extractor → one `sobject` node.
+ */
+export function isSObjectObjectMeta(filePath: string): boolean {
+  return /(?:^|\/)objects\/[^/]+\/[^/]+\.object-meta\.xml$/i.test(filePath);
+}
+
+/**
  * (viva-local) Salesforce declarative metadata that references SObject fields:
  * Page Layouts (`*.layout-meta.xml`) and Validation Rules
  * (`*.validationRule-meta.xml`). Routed to the metadata extractor for

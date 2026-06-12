@@ -88,6 +88,20 @@ export class SalesforceMetadataExtractor {
     });
   }
 
+  /** The metadata component also references its OBJECT — surfaced by
+   * object_impact so deleting/renaming the object flags this Layout/VR. */
+  private pushObjectRef(fromId: string, object: string): void {
+    this.unresolvedReferences.push({
+      fromNodeId: fromId,
+      referenceName: `@object/${object}`,
+      referenceKind: 'object_metadata_ref',
+      line: 1,
+      column: 0,
+      filePath: this.filePath,
+      language: 'apex',
+    });
+  }
+
   /** Layout: object = filename prefix before the first `-`; fields = `<field>X</field>`. */
   private extractLayout(): void {
     const base = this.fileName().replace(/\.layout-meta\.xml$/i, '');
@@ -96,6 +110,7 @@ export class SalesforceMetadataExtractor {
     const object = base.slice(0, dash);
     const label = base.slice(dash + 1) || base;
     const fromId = this.componentNode(label, 'Layout');
+    this.pushObjectRef(fromId, object);
     const seen = new Set<string>();
     for (const m of this.source.matchAll(/<field>([^<]+)<\/field>/gi)) {
       const field = m[1]!.trim();
@@ -115,6 +130,7 @@ export class SalesforceMetadataExtractor {
     const formula = this.source.match(/<errorConditionFormula>([\s\S]*?)<\/errorConditionFormula>/i)?.[1] ?? '';
     if (!formula) return;
     const fromId = this.componentNode(name, 'ValidationRule');
+    this.pushObjectRef(fromId, object);
     const seen = new Set<string>();
     for (const m of formula.matchAll(/\b([A-Za-z_]\w*__c)\b/g)) {
       const field = m[1]!;

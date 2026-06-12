@@ -16,7 +16,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, isSObjectFieldMeta, isSalesforceMetadata } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, isSObjectFieldMeta, isSObjectObjectMeta, isSalesforceMetadata } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -28,6 +28,7 @@ import { VisualforceExtractor } from './visualforce-extractor';
 import { LwcTemplateExtractor } from './lwc-template-extractor';
 import { AuraExtractor } from './aura-extractor';
 import { SObjectSchemaExtractor } from './sobject-schema-extractor';
+import { SObjectObjectExtractor } from './sobject-object-extractor';
 import { SalesforceMetadataExtractor } from './salesforce-metadata-extractor';
 import { SvelteExtractor } from './svelte-extractor';
 import { AstroExtractor } from './astro-extractor';
@@ -3014,12 +3015,17 @@ export class TreeSitterExtractor {
     const t = node.type;
     if (t === 'method_declaration' || t === 'constructor_declaration' || t === 'trigger_declaration') {
       this.buildApexVarTypes(node);
+      if (t === 'trigger_declaration') this.extractApexTriggerObject(node);
     } else if (t === 'query_expression') {
       this.extractSoqlFields(node);
     } else if (t === 'object_creation_expression') {
       this.extractApexConstructorFields(node);
     } else if (t === 'field_access') {
       this.extractApexFieldAccess(node);
+    } else if (t === 'dml_expression') {
+      this.extractApexDml(node);
+    } else if (t === 'type_identifier') {
+      this.extractApexTypeRef(node);
     }
   }
 
@@ -3102,7 +3108,10 @@ export class TreeSitterExtractor {
       if (c.type === 'from_clause') {
         const storage = c.namedChild(0);
         const id = storage?.namedChild(0);
-        if (id) object = getNodeText(id, this.source);
+        if (id) {
+          object = getNodeText(id, this.source);
+          this.emitObjectRef(object, 'object_soql_from', id); // SOQL FROM Obj → sobject
+        }
       } else if (c.type === 'select_clause') {
         selectClause = c;
       } else if (c.type === 'where_clause' || c.type === 'order_by_clause' || c.type === 'group_by_clause') {
@@ -3161,7 +3170,11 @@ export class TreeSitterExtractor {
       if (c.type === 'type_identifier' && !typeName) typeName = getNodeText(c, this.source);
       else if (c.type === 'argument_list') args = c;
     }
-    if (!typeName || !args) return;
+    if (!typeName) return;
+    // `new Obj(...)` — the constructed type is an object usage. Resolution drops
+    // it silently if `Obj` is an Apex class rather than an SObject.
+    this.emitObjectRef(typeName, 'object_type_ref', node);
+    if (!args) return;
     for (let i = 0; i < args.namedChildCount; i++) {
       const a = args.namedChild(i)!;
       if (a.type === 'assignment_expression') {
@@ -3171,6 +3184,61 @@ export class TreeSitterExtractor {
         }
       }
     }
+  }
+
+  /** Apex DML (`insert x;` / `update x;` / `delete x;` / `upsert`/`undelete`) →
+   * object_dml on the operand variable's declared SObject type. `Database.insert`
+   * calls (method_invocation, not dml_expression) are left to a later pass. */
+  private extractApexDml(node: SyntaxNode): void {
+    let operand: SyntaxNode | null = null;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i)!;
+      if (c.type === 'dml_type') continue;
+      operand = c; // the value being DML'd (variable, usually)
+      break;
+    }
+    if (!operand) return;
+    // Simple `insert acc;` — operand is the variable; its type is the object.
+    if (operand.type === 'identifier') {
+      const ty = this.apexVarTypes.get(getNodeText(operand, this.source));
+      if (ty) this.emitObjectRef(ty, 'object_dml', operand);
+    } else if (operand.type === 'object_creation_expression') {
+      // `insert new Foo__c();` — the constructor pass emits object_type_ref; add
+      // the DML intent too.
+      const tn = operand.namedChild(0);
+      if (tn?.type === 'type_identifier') this.emitObjectRef(getNodeText(tn, this.source), 'object_dml', operand);
+    }
+  }
+
+  /** A standalone SObject type reference (`List<Foo__c>`, `Foo__c x`, `(Foo__c)`,
+   * return types). Gated to custom-SObject suffixes so we don't flood the graph
+   * with every `String`/`Integer`/Apex-class type_identifier. Skip when the parent
+   * is `object_creation_expression` (the constructor pass already emits it). */
+  private extractApexTypeRef(node: SyntaxNode): void {
+    if (node.parent?.type === 'object_creation_expression') return;
+    const name = getNodeText(node, this.source);
+    if (!/(__c|__mdt|__e|__b)$/i.test(name)) return; // high-precision: custom SObjects only
+    this.emitObjectRef(name, 'object_type_ref', node);
+  }
+
+  /** `trigger T on Obj (...)` → object_type_ref from the trigger to the object. */
+  private extractApexTriggerObject(node: SyntaxNode): void {
+    const object = getChildByField(node, 'object');
+    if (object) this.emitObjectRef(getNodeText(object, this.source), 'object_type_ref', object);
+  }
+
+  /** Emit an object usage ref (`@object/Object`, sentinel claimed only by the
+   * salesforce resolver → resolves only to a real `sobject` node). */
+  private emitObjectRef(object: string, kind: EdgeKind, node: SyntaxNode): void {
+    const fromId = this.nodeStack[this.nodeStack.length - 1];
+    if (!fromId) return;
+    this.unresolvedReferences.push({
+      fromNodeId: fromId,
+      referenceName: `@object/${object}`,
+      referenceKind: kind,
+      line: node.startPosition.row + 1,
+      column: node.startPosition.column,
+    });
   }
 
   private emitFieldRef(objectType: string, field: string, kind: EdgeKind, node: SyntaxNode): void {
@@ -5098,6 +5166,11 @@ export function extractFromSource(
     // (viva-local) Salesforce SObject field metadata (objects/*/fields/*.field-meta.xml)
     // → one sobject_field node. Checked before the generic xml branch.
     const extractor = new SObjectSchemaExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (isSObjectObjectMeta(filePath)) {
+    // (viva-local) Salesforce SObject definition (objects/*/*.object-meta.xml)
+    // → one sobject node. Checked before the generic xml branch.
+    const extractor = new SObjectObjectExtractor(filePath, source);
     result = extractor.extract();
   } else if (isSalesforceMetadata(filePath)) {
     // (viva-local) Salesforce Layout / ValidationRule → field_metadata_ref edges.

@@ -36,4 +36,5 @@
 // v11: P4 field metadata refs — Layout/ValidationRule/formula → sobject_field (field_impact).
 // v15: merged upstream main (was at 14) into the Salesforce fork.
 // v25: merged upstream main (was at 24) into the Salesforce fork.
-export const EXTRACTION_VERSION = 25;
+// v26: SObject OBJECT layer — `sobject` nodes + object_soql_from/dml/type_ref/schema_ref/metadata_ref edges.
+export const EXTRACTION_VERSION = 26;

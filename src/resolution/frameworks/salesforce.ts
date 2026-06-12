@@ -181,6 +181,22 @@ function resolveSObjectFieldPath(ref: UnresolvedRef, context: ResolutionContext)
   return { original: ref, targetNodeId: terminal.id, confidence: 0.9, resolvedBy: 'framework' };
 }
 
+/**
+ * viva-specific: resolve an SObject (object) usage `@object/Object`. Map to the
+ * `sobject` node by qualifiedName `Object`. The `@object/` sentinel guarantees
+ * only real object usages (DML, `FROM Obj`, `List<Obj>`, `trigger on Obj`,
+ * `@salesforce/schema/Obj`, VF standardController, declarative metadata) resolve,
+ * never a coincidental same-named class/type.
+ */
+const OBJECT_PREFIX = '@object/';
+function resolveSObjectRef(ref: UnresolvedRef, context: ResolutionContext): ResolvedRef | null {
+  if (!ref.referenceName.startsWith(OBJECT_PREFIX)) return null;
+  const objectName = ref.referenceName.slice(OBJECT_PREFIX.length); // Object
+  const target = context.getNodesByQualifiedName(objectName).find((n) => n.kind === 'sobject');
+  if (!target) return null;
+  return { original: ref, targetNodeId: target.id, confidence: 0.95, resolvedBy: 'framework' };
+}
+
 export const salesforceResolver: FrameworkResolver = {
   name: 'salesforce',
   languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura', 'apex'],
@@ -192,7 +208,8 @@ export const salesforceResolver: FrameworkResolver = {
     return (
       name.startsWith(REMOTE_ACTION_PREFIX) ||
       name.startsWith(FIELD_PREFIX) ||
-      name.startsWith(FIELDPATH_PREFIX)
+      name.startsWith(FIELDPATH_PREFIX) ||
+      name.startsWith(OBJECT_PREFIX)
     );
   },
 
@@ -212,6 +229,10 @@ export const salesforceResolver: FrameworkResolver = {
     // viva relationship-path field usage (`@fieldpath/Base/Rel__r.Field`).
     const fieldPath = resolveSObjectFieldPath(ref, context);
     if (fieldPath) return fieldPath;
+
+    // viva SObject (object) usage (`@object/Object`).
+    const object = resolveSObjectRef(ref, context);
+    if (object) return object;
 
     // viva React→Apex postMessage bridge (`@remoteAction/Class.method`).
     const remoteAction = resolveRemoteActionCall(ref, context);

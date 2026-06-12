@@ -1091,6 +1091,86 @@ export class CodeGraph {
     };
   }
 
+  /** (viva-local) Look up a Salesforce SObject (object) node by API name. */
+  getObject(objectName: string): Node | null {
+    return (
+      this.queries
+        .getNodesByQualifiedNameExact(objectName)
+        .find((n) => n.kind === 'sobject') ?? null
+    );
+  }
+
+  /**
+   * (viva-local) All sites that USE a Salesforce SObject, typed by how
+   * (`object_soql_from` / `object_dml` / `object_type_ref` / `object_schema_ref`
+   * / `object_metadata_ref`). The object analogue of getFieldUsages.
+   */
+  getObjectUsages(
+    objectName: string,
+    kinds?: EdgeKind[]
+  ): Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }> {
+    const object = this.getObject(objectName);
+    if (!object) return [];
+    const objectKinds: EdgeKind[] =
+      kinds ?? ['object_soql_from', 'object_dml', 'object_type_ref', 'object_schema_ref', 'object_metadata_ref'];
+    const edges = this.queries.getIncomingEdges(object.id, objectKinds);
+    const seen = new Set<string>();
+    const out: Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }> = [];
+    for (const e of edges) {
+      const from = this.queries.getNodeById(e.source);
+      const file = from?.filePath ?? '';
+      const line = e.line ?? 0;
+      const key = `${file}:${line}:${e.kind}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ file, line, kind: e.kind, from });
+    }
+    return out;
+  }
+
+  /**
+   * (viva-local) Blast radius of renaming/retyping/deleting a Salesforce SObject:
+   * its code usages (SOQL/DML/type refs/schema refs), the declarative metadata
+   * that references it (Layouts, Validation Rules, …), AND its fields with each
+   * field's own usage count rolled up — so a reviewer sees the WHOLE surface that
+   * breaks. The object analogue of getFieldImpact.
+   */
+  getObjectImpact(objectName: string): {
+    object: Node | null;
+    kind: string;
+    usages: Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }>;
+    metadataRefs: Array<{ name: string; type: string; file: string }>;
+    fields: Array<{ qualifiedName: string; signature: string; usageCount: number }>;
+  } {
+    const object = this.getObject(objectName);
+    if (!object) return { object: null, kind: '', usages: [], metadataRefs: [], fields: [] };
+    const usages = this.getObjectUsages(objectName, [
+      'object_soql_from', 'object_dml', 'object_type_ref', 'object_schema_ref',
+    ]);
+    const metaEdges = this.queries.getIncomingEdges(object.id, ['object_metadata_ref']);
+    const metadataRefs = metaEdges.map((e) => {
+      const src = this.queries.getNodeById(e.source);
+      return {
+        name: src?.name ?? '(unknown)',
+        type: src?.signature ?? 'Metadata',
+        file: src?.filePath ?? '',
+      };
+    });
+    // Roll up the object's fields (qualifiedName `Object.Field`) with each
+    // field's usage-site count — deleting the object deletes every field too.
+    const prefix = `${objectName}.`;
+    const fields = this.queries
+      .getNodesByKind('sobject_field')
+      .filter((n) => n.qualifiedName.startsWith(prefix))
+      .map((f) => ({
+        qualifiedName: f.qualifiedName,
+        signature: f.signature ?? 'Unknown',
+        usageCount: this.getFieldUsages(f.qualifiedName).length,
+      }))
+      .sort((a, b) => b.usageCount - a.usageCount);
+    return { object, kind: object.signature ?? '', usages, metadataRefs, fields };
+  }
+
   /**
    * Find circular dependencies in the codebase
    *
