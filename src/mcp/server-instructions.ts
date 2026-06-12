@@ -61,7 +61,7 @@ typically one to a few calls; a grep/read exploration is dozens.
 - **Refactor planning**: \`codegraph_callers\` for the complete call-site list to update; the wider blast radius is already attached to \`codegraph_explore\` / \`codegraph_node\` output.
 - **Debugging a regression**: \`codegraph_callers\` of the suspected symbol; \`codegraph_node\` on anything unexpected that appears.
 - **Salesforce field change ("replace field A with B" / retype / delete)**: \`codegraph_field_impact\` \`<Object.Field>\` FIRST — it returns every code site (Apex read/write, SOQL, LWC bind) PLUS the declarative metadata (Layouts, Validation Rules, formula fields) that breaks SILENTLY and grep misses. Then \`codegraph_field_usages\` for the per-site list. No manual object-disambiguation needed.
-- **Salesforce object change ("rename/delete object \`Foo__c\`" / retype)**: \`codegraph_object_impact\` \`<Object>\` FIRST — it returns every code usage (SOQL FROM, DML, \`List<Obj>\`, \`trigger on Obj\`, LWC/VF schema) PLUS Layouts/Validation-Rules AND every field the object owns (each with its own usage count), since deleting the object cascades to all of them. Then \`codegraph_object_usages\` for the per-site list.
+- **Salesforce object change ("rename/delete object \`Foo__c\`" / retype)**: \`codegraph_object_impact\` \`<Object>\` FIRST — it returns every code usage (SOQL FROM, DML, \`List<Obj>\`, \`trigger on Obj\`, LWC/VF schema), the declarative metadata (Layouts, Validation Rules, Flows, Permission Sets, Record Types), every field the object owns (each with its usage count), AND the other objects with a lookup/master-detail to it (they orphan on delete) — the full cascade. Then \`codegraph_object_usages\` for the per-site list.
 
 ## Anti-patterns
 

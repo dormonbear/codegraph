@@ -7470,6 +7470,14 @@ describe('Aura extraction + resolver', () => {
         `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>${name}</fullName>\n<type>${type}</type>\n</CustomField>\n`;
       fs.writeFileSync(path.join(mFields, 'Amount__c.field-meta.xml'), field('Amount__c', 'Currency'));
       fs.writeFileSync(path.join(mFields, 'Name__c.field-meta.xml'), field('Name__c', 'Text'));
+      // A second object with a lookup TO Milestone__c → object_relationship (orphan-on-delete).
+      const taskObjDir = path.join(dir, 'force-app/main/default/objects/Task__c');
+      const tFields = path.join(taskObjDir, 'fields');
+      fs.mkdirSync(tFields, { recursive: true });
+      fs.writeFileSync(path.join(taskObjDir, 'Task__c.object-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">\n<label>Task</label>\n</CustomObject>\n`);
+      fs.writeFileSync(path.join(tFields, 'Milestone__c.field-meta.xml'),
+        `<?xml version="1.0"?>\n<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Milestone__c</fullName>\n<type>Lookup</type>\n<referenceTo>Milestone__c</referenceTo>\n</CustomField>\n`);
       // Layout → object_metadata_ref (object from filename prefix).
       fs.writeFileSync(path.join(layouts, 'Milestone__c-Milestone Layout.layout-meta.xml'),
         `<?xml version="1.0"?>\n<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n<field>Amount__c</field>\n</Layout>\n`);
@@ -7522,6 +7530,8 @@ describe('Aura extraction + resolver', () => {
       expect(impact.fields.map((f) => f.qualifiedName).sort()).toEqual(['Milestone__c.Amount__c', 'Milestone__c.Name__c']);
       const metaTypes = new Set(impact.metadataRefs.map((r) => r.type));
       expect(metaTypes).toEqual(new Set(['Layout', 'Flow', 'RecordType', 'PermissionSet']));
+      // Relationship: Task__c has a lookup to Milestone__c → orphans on delete.
+      expect(impact.childObjects).toEqual([{ object: 'Task__c', via: 'Milestone__c' }]);
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });

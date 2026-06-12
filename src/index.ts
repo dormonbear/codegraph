@@ -1141,9 +1141,10 @@ export class CodeGraph {
     usages: Array<{ file: string; line: number; kind: EdgeKind; from: Node | null }>;
     metadataRefs: Array<{ name: string; type: string; file: string }>;
     fields: Array<{ qualifiedName: string; signature: string; usageCount: number }>;
+    childObjects: Array<{ object: string; via: string }>;
   } {
     const object = this.getObject(objectName);
-    if (!object) return { object: null, kind: '', usages: [], metadataRefs: [], fields: [] };
+    if (!object) return { object: null, kind: '', usages: [], metadataRefs: [], fields: [], childObjects: [] };
     const usages = this.getObjectUsages(objectName, [
       'object_soql_from', 'object_dml', 'object_type_ref', 'object_schema_ref',
     ]);
@@ -1168,7 +1169,23 @@ export class CodeGraph {
         usageCount: this.getFieldUsages(f.qualifiedName).length,
       }))
       .sort((a, b) => b.usageCount - a.usageCount);
-    return { object, kind: object.signature ?? '', usages, metadataRefs, fields };
+    // Child objects: lookup/master-detail fields that point AT this object
+    // (incoming object_relationship edges). They orphan when this object is
+    // deleted — the relationship blast radius a field-by-field view misses.
+    const relEdges = this.queries.getIncomingEdges(object.id, ['object_relationship']);
+    const childSeen = new Set<string>();
+    const childObjects: Array<{ object: string; via: string }> = [];
+    for (const e of relEdges) {
+      const field = this.queries.getNodeById(e.source); // the lookup field node
+      if (!field || field.kind !== 'sobject_field') continue;
+      const childObj = field.qualifiedName.split('.')[0] ?? '';
+      const key = `${childObj}.${field.name}`;
+      if (!childObj || childSeen.has(key)) continue;
+      childSeen.add(key);
+      childObjects.push({ object: childObj, via: field.name });
+    }
+    childObjects.sort((a, b) => a.object.localeCompare(b.object));
+    return { object, kind: object.signature ?? '', usages, metadataRefs, fields, childObjects };
   }
 
   /**

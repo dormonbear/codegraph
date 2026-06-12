@@ -73,7 +73,8 @@ export type EdgeKind =
   | 'object_dml'         // Apex DML (insert/update/delete/upsert/undelete/merge) on the object
   | 'object_type_ref'    // Apex type usage: List<Obj>, Obj var, (Obj) cast, new Obj(), Obj.SObjectType
   | 'object_schema_ref'  // LWC/Aura @salesforce/schema/Obj import, VF standardController
-  | 'object_metadata_ref'; // declarative metadata (Layout/VR/Flow/PermSet/RecordType/Trigger) references the object
+  | 'object_metadata_ref' // declarative metadata (Layout/VR/Flow/PermSet/RecordType/Trigger) references the object
+  | 'object_relationship'; // a lookup/master-detail field on object A points to object B (A.__c → referenceTo B)
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

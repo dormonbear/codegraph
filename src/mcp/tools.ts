@@ -679,7 +679,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_object_impact',
-    description: 'Salesforce: blast radius of renaming, retyping, or DELETING an SObject — its code usages (SOQL/DML/type refs) PLUS the declarative metadata that references it (Page Layouts, Validation Rules) AND every field it owns with each field\'s own usage count rolled up. Deleting an object cascades to all its fields, triggers, and layouts — far wider than a single field. The object analogue of codegraph_impact; run it before any object rename/delete.',
+    description: 'Salesforce: blast radius of renaming, retyping, or DELETING an SObject — its code usages (SOQL/DML/type refs), the declarative metadata that references it (Page Layouts, Validation Rules, Flows, Permission Sets, Record Types), every field it owns (each with its own usage count), AND the other objects that have a lookup/master-detail TO it (they orphan on delete). Deleting an object cascades to all of these — far wider than a single field. The object analogue of codegraph_impact; run it before any object rename/delete.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1759,6 +1759,13 @@ export class ToolHandler {
       for (const [type, names] of [...byType.entries()].sort()) {
         out.push(`  ${type}: ${[...new Set(names)].sort().join(', ')}`);
       }
+    }
+    if (impact.childObjects.length > 0) {
+      out.push(``, `⚠ ${impact.childObjects.length} object(s) have a lookup/master-detail TO this object — they orphan on delete:`);
+      for (const c of impact.childObjects.slice(0, 30)) {
+        out.push(`  ${c.object} (via ${c.via})`);
+      }
+      if (impact.childObjects.length > 30) out.push(`  …and ${impact.childObjects.length - 30} more`);
     }
     if (impact.fields.length > 0) {
       const totalFieldUsages = impact.fields.reduce((s, f) => s + f.usageCount, 0);

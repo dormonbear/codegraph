@@ -41,6 +41,7 @@ export class SObjectSchemaExtractor {
       if (node) {
         this.nodes.push(node);
         this.extractFormulaRefs(node);
+        this.extractRelationshipRef(node);
       }
     } catch (error) {
       this.errors.push({
@@ -85,6 +86,27 @@ export class SObjectSchemaExtractor {
         language: 'apex',
       });
     }
+  }
+
+  /**
+   * A lookup/master-detail field points to another object (`<referenceTo>`,
+   * stashed in the field node's typeParameters). Emit an object_relationship edge
+   * `field → @object/<referenceTo>` so object_impact can list the objects that
+   * have a lookup TO a given object (they orphan when it's deleted) and the graph
+   * is navigable parent↔child. Polymorphic lookups expose only the first target.
+   */
+  private extractRelationshipRef(fieldNode: Node): void {
+    const target = fieldNode.typeParameters?.[0];
+    if (!target) return;
+    this.unresolvedReferences.push({
+      fromNodeId: fieldNode.id,
+      referenceName: `@object/${target}`,
+      referenceKind: 'object_relationship',
+      line: 1,
+      column: 0,
+      filePath: this.filePath,
+      language: 'apex',
+    });
   }
 
   /** Object API name from `.../objects/<Object>/fields/<Field>.field-meta.xml`. */
