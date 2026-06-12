@@ -186,13 +186,15 @@ export function isSObjectObjectMeta(filePath: string): boolean {
 }
 
 /**
- * (viva-local) Salesforce declarative metadata that references SObject fields:
- * Page Layouts (`*.layout-meta.xml`) and Validation Rules
- * (`*.validationRule-meta.xml`). Routed to the metadata extractor for
- * field_metadata_ref edges (field-impact's silent breakers).
+ * (viva-local) Salesforce declarative metadata that references SObject fields
+ * and/or objects, routed to the metadata extractor for field_metadata_ref /
+ * object_metadata_ref edges (impact's silent breakers):
+ *  - Page Layouts (`*.layout-meta.xml`) + Validation Rules (`*.validationRule-meta.xml`) → field + object
+ *  - Flows (`*.flow-meta.xml`), Permission Sets (`*.permissionset-meta.xml`),
+ *    Profiles (`*.profile-meta.xml`), Record Types (`*.recordType-meta.xml`) → object
  */
 export function isSalesforceMetadata(filePath: string): boolean {
-  return /\.(layout|validationRule)-meta\.xml$/i.test(filePath);
+  return /\.(layout|validationRule|flow|permissionset|profile|recordType)-meta\.xml$/i.test(filePath);
 }
 
 /**

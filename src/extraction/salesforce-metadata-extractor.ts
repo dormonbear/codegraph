@@ -3,15 +3,16 @@ import { generateNodeId } from './tree-sitter-helpers';
 
 /**
  * SalesforceMetadataExtractor — (viva-local, NEVER upstream) indexes the
- * declarative metadata that REFERENCES SObject fields but breaks SILENTLY when a
- * field changes type or is removed: Page Layouts and Validation Rules. (Formula
- * fields are handled in the schema extractor; Flows are deferred — their field
- * refs are deeply nested and lower-volume.)
+ * declarative metadata that REFERENCES SObject fields and/or objects but breaks
+ * SILENTLY when a field/object changes type or is removed:
+ *  - Page Layouts + Validation Rules → field_metadata_ref AND object_metadata_ref
+ *  - Flows, Permission Sets / Profiles, Record Types → object_metadata_ref
  *
  * Each metadata file becomes one `component` node (signature = "Layout" /
- * "ValidationRule") with `field_metadata_ref` edges to the `sobject_field` nodes
- * it names, so codegraph_field_impact can warn "referenced by <Layout> (Layout)"
- * before a reviewer deletes the field.
+ * "ValidationRule" / "Flow" / "PermissionSet" / "Profile" / "RecordType") with
+ * `field_metadata_ref` / `object_metadata_ref` edges, so codegraph_field_impact /
+ * codegraph_object_impact can warn "referenced by <X>" before a reviewer
+ * deletes the field/object.
  *
  *  - Layout `<Object>-<Label>.layout-meta.xml` (in the flat `layouts/` dir): the
  *    object is the filename prefix before the first `-`; fields are `<field>X</field>`.
@@ -35,6 +36,9 @@ export class SalesforceMetadataExtractor {
     try {
       if (/\.layout-meta\.xml$/i.test(this.filePath)) this.extractLayout();
       else if (/\.validationRule-meta\.xml$/i.test(this.filePath)) this.extractValidationRule();
+      else if (/\.flow-meta\.xml$/i.test(this.filePath)) this.extractFlow();
+      else if (/\.(permissionset|profile)-meta\.xml$/i.test(this.filePath)) this.extractObjectPermissions();
+      else if (/\.recordType-meta\.xml$/i.test(this.filePath)) this.extractRecordType();
     } catch (error) {
       this.errors.push({
         message: `Salesforce metadata extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -138,5 +142,43 @@ export class SalesforceMetadataExtractor {
       seen.add(field);
       this.pushFieldRef(fromId, object, field);
     }
+  }
+
+  /** Flow: every `<object>X</object>` it reads/creates/updates → object_metadata_ref. */
+  private extractFlow(): void {
+    const name = this.fileName().replace(/\.flow-meta\.xml$/i, '');
+    const objects = new Set<string>();
+    for (const m of this.source.matchAll(/<object>([^<]+)<\/object>/gi)) {
+      const o = m[1]!.trim();
+      if (o) objects.add(o);
+    }
+    if (objects.size === 0) return;
+    const fromId = this.componentNode(name, 'Flow');
+    for (const o of objects) this.pushObjectRef(fromId, o);
+  }
+
+  /** Permission Set / Profile: the objects granted in `<objectPermissions>` → object_metadata_ref. */
+  private extractObjectPermissions(): void {
+    const name = this.fileName().replace(/\.(permissionset|profile)-meta\.xml$/i, '');
+    const label = /\.profile-meta\.xml$/i.test(this.filePath) ? 'Profile' : 'PermissionSet';
+    const objects = new Set<string>();
+    for (const block of this.source.matchAll(/<objectPermissions>([\s\S]*?)<\/objectPermissions>/gi)) {
+      const o = block[1]!.match(/<object>([^<]+)<\/object>/i)?.[1]?.trim();
+      if (o) objects.add(o);
+    }
+    if (objects.size === 0) return;
+    const fromId = this.componentNode(name, label);
+    for (const o of objects) this.pushObjectRef(fromId, o);
+  }
+
+  /** RecordType: object from the path `objects/<Obj>/recordTypes/<Name>.recordType-meta.xml`. */
+  private extractRecordType(): void {
+    const parts = this.filePath.split(/[/\\]/);
+    const rtIdx = parts.lastIndexOf('recordTypes');
+    const object = rtIdx >= 1 ? parts[rtIdx - 1] : null;
+    if (!object) return;
+    const name = this.fileName().replace(/\.recordType-meta\.xml$/i, '');
+    const fromId = this.componentNode(name, 'RecordType');
+    this.pushObjectRef(fromId, object);
   }
 }

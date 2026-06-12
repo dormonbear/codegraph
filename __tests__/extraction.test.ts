@@ -7473,6 +7473,19 @@ describe('Aura extraction + resolver', () => {
       // Layout → object_metadata_ref (object from filename prefix).
       fs.writeFileSync(path.join(layouts, 'Milestone__c-Milestone Layout.layout-meta.xml'),
         `<?xml version="1.0"?>\n<Layout xmlns="http://soap.sforce.com/2006/04/metadata">\n<field>Amount__c</field>\n</Layout>\n`);
+      // P2 declarative metadata → object_metadata_ref (Flow / RecordType / PermissionSet).
+      const flows = path.join(dir, 'force-app/main/default/flows');
+      const recTypes = path.join(objDir, 'recordTypes');
+      const permsets = path.join(dir, 'force-app/main/default/permissionsets');
+      fs.mkdirSync(flows, { recursive: true });
+      fs.mkdirSync(recTypes, { recursive: true });
+      fs.mkdirSync(permsets, { recursive: true });
+      fs.writeFileSync(path.join(flows, 'Milestone_Flow.flow-meta.xml'),
+        `<?xml version="1.0"?>\n<Flow xmlns="http://soap.sforce.com/2006/04/metadata">\n<recordUpdates><object>Milestone__c</object></recordUpdates>\n</Flow>\n`);
+      fs.writeFileSync(path.join(recTypes, 'Active.recordType-meta.xml'),
+        `<?xml version="1.0"?>\n<RecordType xmlns="http://soap.sforce.com/2006/04/metadata">\n<fullName>Active</fullName>\n</RecordType>\n`);
+      fs.writeFileSync(path.join(permsets, 'Editor.permissionset-meta.xml'),
+        `<?xml version="1.0"?>\n<PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">\n<objectPermissions><object>Milestone__c</object><allowRead>true</allowRead></objectPermissions>\n</PermissionSet>\n`);
 
       fs.writeFileSync(path.join(classes, 'Svc.cls'),
         `public class Svc {\n` +
@@ -7485,7 +7498,7 @@ describe('Aura extraction + resolver', () => {
         `trigger MilestoneTrigger on Milestone__c (before insert) {\n}\n`); // object_type_ref (trigger)
 
       const cg = CodeGraph.initSync(dir, {
-        config: { include: ['**/*.cls', '**/*.trigger', '**/*.field-meta.xml', '**/*.object-meta.xml', '**/*.layout-meta.xml'], exclude: [] },
+        config: { include: ['**/*.cls', '**/*.trigger', '**/*.field-meta.xml', '**/*.object-meta.xml', '**/*.layout-meta.xml', '**/*.flow-meta.xml', '**/*.recordType-meta.xml', '**/*.permissionset-meta.xml'], exclude: [] },
       });
       await cg.indexAll();
       cg.resolveReferences();
@@ -7501,12 +7514,14 @@ describe('Aura extraction + resolver', () => {
       expect(byKind('object_soql_from')).toBe(1);
       expect(byKind('object_dml')).toBe(1);
       expect(byKind('object_type_ref')).toBeGreaterThanOrEqual(2); // trigger + decl/ctor/generic
-      expect(byKind('object_metadata_ref')).toBe(1); // the Layout
+      // Layout + Flow + RecordType + PermissionSet → 4 distinct metadata refs.
+      expect(byKind('object_metadata_ref')).toBe(4);
 
-      // Impact roll-up: both fields owned, with the Layout as a metadata ref.
+      // Impact roll-up: both fields owned; metadata covers code-invisible breakers.
       const impact = cg.getObjectImpact('Milestone__c');
       expect(impact.fields.map((f) => f.qualifiedName).sort()).toEqual(['Milestone__c.Amount__c', 'Milestone__c.Name__c']);
-      expect(impact.metadataRefs.some((r) => r.type === 'Layout')).toBe(true);
+      const metaTypes = new Set(impact.metadataRefs.map((r) => r.type));
+      expect(metaTypes).toEqual(new Set(['Layout', 'Flow', 'RecordType', 'PermissionSet']));
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
