@@ -28,6 +28,25 @@ import {
 } from 'fs';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
+
+/**
+ * An expected, recoverable "codegraph can't serve this" condition — most
+ * importantly a project with no index. The dispatch catch converts these to
+ * SUCCESS-shaped responses (guidance text, NO isError): an `isError: true`
+ * early in a session teaches the agent the toolset is broken and it stops
+ * calling codegraph entirely (observed repeatedly), which is exactly wrong
+ * for conditions the agent can simply work around (use built-in tools for
+ * that codebase / pass projectPath). isError is reserved for "stop trying"
+ * cases: security refusals ({@link PathRefusalError}) and genuine
+ * malfunctions.
+ */
+export class NotIndexedError extends Error {}
+
+/**
+ * A security refusal (sensitive system path). Stays `isError: true` WITHOUT
+ * retry guidance — abandoning this path is the desired agent reaction.
+ */
+export class PathRefusalError extends Error {}
 import { resolve as resolvePath } from 'path';
 
 /** Maximum output length to prevent context bloat (characters) */
@@ -411,6 +430,10 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the function, method, or class to find callers for',
         },
+        file: {
+          type: 'string',
+          description: 'Narrow to the definition in this file (path or suffix) when several same-named symbols exist (e.g. one UserService per app in a monorepo)',
+        },
         limit: {
           type: 'number',
           description: 'Maximum number of callers to return (default: 20)',
@@ -431,6 +454,10 @@ export const tools: ToolDefinition[] = [
           type: 'string',
           description: 'Name of the function, method, or class to find callees for',
         },
+        file: {
+          type: 'string',
+          description: 'Narrow to the definition in this file (path or suffix) when several same-named symbols exist',
+        },
         limit: {
           type: 'number',
           description: 'Maximum number of callees to return (default: 20)',
@@ -450,6 +477,10 @@ export const tools: ToolDefinition[] = [
         symbol: {
           type: 'string',
           description: 'Name of the symbol to analyze impact for',
+        },
+        file: {
+          type: 'string',
+          description: 'Narrow to the definition in this file (path or suffix) when several same-named symbols exist',
         },
         depth: {
           type: 'number',
@@ -510,7 +541,7 @@ export const tools: ToolDefinition[] = [
       properties: {
         query: {
           type: 'string',
-          description: 'Symbol names, file names, or short code terms to explore (e.g., "AuthService loginUser session-manager", "GraphTraverser BFS impact traversal.ts"). Use codegraph_search first to find relevant names.',
+          description: 'Symbol names, file names, or short code terms to explore (e.g., "AuthService loginUser session-manager", "GraphTraverser BFS impact traversal.ts"). For a flow question, name the symbols spanning the flow (e.g. "mutateElement renderScene"). A natural-language question works too — no prior codegraph_search needed.',
         },
         maxFiles: {
           type: 'number',
@@ -626,10 +657,40 @@ export const tools: ToolDefinition[] = [
  */
 export function getStaticTools(): ToolDefinition[] {
   const raw = process.env.CODEGRAPH_MCP_TOOLS;
-  if (!raw || !raw.trim()) return tools;
+  if (!raw || !raw.trim()) {
+    return tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
+  }
   const allow = new Set(raw.split(',').map(s => s.trim().replace(/^codegraph_/, '')).filter(Boolean));
   return allow.size ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, ''))) : tools;
 }
+
+/**
+ * The MCP tools served by DEFAULT (short names). The other defined tools
+ * (callees, impact, files, status) remain fully functional — handlers stay,
+ * the library API and CLI are untouched, and `CODEGRAPH_MCP_TOOLS` re-enables
+ * any of them — they just aren't LISTED to agents anymore.
+ *
+ * Evidence for the cut (the "adapt the tool to the agent" principle —
+ * fewer tools = fewer mis-picks, and presence itself steers):
+ * - `codegraph_impact` appears in ZERO recorded eval runs ever — its
+ *   blast-radius info already arrives inline on explore (the "Blast radius"
+ *   section) and node (the dependents note), so agents never need the
+ *   standalone tool.
+ * - `codegraph_callees` is redundant by construction: a symbol's body (which
+ *   node returns) IS its callee list, plus the caller/callee trail.
+ * - `codegraph_files` / `codegraph_status`: the tiny-repo audit (see
+ *   getTools) found they "reduce to one grep"; staleness banners already
+ *   inline the pending-sync info on every read tool, and the CLI covers
+ *   diagnostics.
+ * - `codegraph_callers` stays: exhaustive call-site enumeration (every
+ *   caller with file:line, callback registrations labeled, one section per
+ *   same-named definition) is the one job explore/node don't replicate.
+ */
+// (viva-local) The fork adds the SObject field tools to the default surface —
+// they are this fork's entire reason to exist, so they must be LISTED by
+// default (upstream's trim would otherwise hide them). files/status stay cut,
+// following upstream's evidence-based decision above.
+const DEFAULT_MCP_TOOLS = new Set(['explore', 'node', 'search', 'callers', 'field_search', 'field_usages', 'field_impact']);
 
 /**
  * Tool handler that executes tools against a CodeGraph instance
@@ -723,9 +784,12 @@ export class ToolHandler {
    */
   getTools(): ToolDefinition[] {
     const allow = this.toolAllowlist();
+    // No explicit allowlist → the default 4-tool surface (see
+    // DEFAULT_MCP_TOOLS for the evidence). An allowlist replaces the
+    // default entirely, so any defined tool can be re-enabled.
     let visible = allow
       ? tools.filter(t => allow.has(t.name.replace(/^codegraph_/, '')))
-      : tools;
+      : tools.filter(t => DEFAULT_MCP_TOOLS.has(t.name.replace(/^codegraph_/, '')));
     if (!this.cg) return visible;
 
     try {
@@ -733,9 +797,10 @@ export class ToolHandler {
       const budget = getExploreBudget(stats.fileCount);
 
       // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
-      // files, only expose the 5 core tools (search, context, node,
-      // explore, trace). The 5 omitted tools (callers, callees, impact,
-      // status, files) reduce to one grep at this scale.
+      // files, only expose the core trio (search, node, explore) — one
+      // below even the 4-tool default: at this scale callers, too, reduces
+      // to one grep. (Historical note: the audit below ran when context and
+      // trace still existed; its "5 core tools" are today's trio.)
       //
       // n=2 audits ruled out cutting below 5 tools:
       // - 3-tool gate (search + context + trace): cost regressed on
@@ -791,14 +856,16 @@ export class ToolHandler {
     if (!projectPath) {
       if (!this.cg) {
         const searched = this.defaultProjectHint ?? process.cwd();
-        throw new Error(
+        throw new NotIndexedError(
           'No CodeGraph project is loaded for this session.\n' +
           `Searched for a .codegraph/ directory starting from: ${searched}\n` +
-          'The index is likely fine — this is a working-directory detection issue: ' +
+          'If this project IS indexed, this is a working-directory detection issue: ' +
           "the MCP client launched the server outside your project and didn't report the " +
           'workspace root. Fix it either way:\n' +
           '  • Pass projectPath to the tool call, e.g. projectPath: "/absolute/path/to/your/project"\n' +
-          '  • Or add --path to the server\'s MCP config args: ["serve", "--mcp", "--path", "/absolute/path/to/your/project"]'
+          '  • Or add --path to the server\'s MCP config args: ["serve", "--mcp", "--path", "/absolute/path/to/your/project"]\n' +
+          'If the project simply has no index, continue with your built-in tools (Read/Grep/Glob) ' +
+          "and don't call codegraph again this session — the user can run 'codegraph init' to enable it."
         );
       }
       return this.cg;
@@ -817,7 +884,7 @@ export class ToolHandler {
     if (existsSync(projectPath)) {
       const pathError = validateProjectPath(projectPath);
       if (pathError) {
-        throw new Error(pathError);
+        throw new PathRefusalError(pathError);
       }
     }
 
@@ -825,7 +892,12 @@ export class ToolHandler {
     const resolvedRoot = findNearestCodeGraphRoot(projectPath);
 
     if (!resolvedRoot) {
-      throw new Error(`CodeGraph not initialized in ${projectPath}. Run 'codegraph init' in that project first.`);
+      throw new NotIndexedError(
+        `The project at ${projectPath} isn't indexed with codegraph (no .codegraph/ directory found ` +
+        'walking up from it), so codegraph cannot query it. Use your built-in tools (Read/Grep/Glob) ' +
+        "for that codebase instead, and don't call codegraph for it again this session. " +
+        "Indexing is the user's decision — they can run 'codegraph init' in that project to enable it."
+      );
     }
 
     // If the path resolves to the default project, reuse the already-open
@@ -1114,7 +1186,21 @@ export class ToolHandler {
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
       return this.withStalenessNotice(withWorktree, args.projectPath as string | undefined);
     } catch (err) {
-      return this.errorResult(`Tool execution failed: ${err instanceof Error ? err.message : String(err)}`);
+      // Expected condition, not a malfunction: answer as a SUCCESS so the
+      // agent keeps trusting the toolset for projects that ARE indexed.
+      // (An isError here teaches session-long abandonment — see NotIndexedError.)
+      if (err instanceof NotIndexedError) {
+        return this.textResult(err.message);
+      }
+      // Security refusal: a clean error, no retry encouragement.
+      if (err instanceof PathRefusalError) {
+        return this.errorResult(err.message);
+      }
+      return this.errorResult(
+        `Tool execution failed: ${err instanceof Error ? err.message : String(err)}. ` +
+        'This is an internal codegraph error — retry the call once; if it persists, ' +
+        'continue without codegraph for this task.'
+      );
     }
   }
 
@@ -1126,7 +1212,11 @@ export class ToolHandler {
     if (typeof query !== 'string') return query;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const kind = args.kind as string | undefined;
+    const rawKind = args.kind as string | undefined;
+    // The schema enum says 'type' (what agents naturally reach for); the
+    // NodeKind is 'type_alias'. Without the mapping, kind: "type" silently
+    // matched nothing — a filter value we advertise must work.
+    const kind = rawKind === 'type' ? 'type_alias' : rawKind;
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
 
@@ -1153,6 +1243,47 @@ export class ToolHandler {
   }
 
   /**
+   * Group symbol matches into DISTINCT DEFINITIONS — one group per
+   * (filePath, qualifiedName), so same-file overloads stay together while
+   * unrelated same-named classes across a monorepo's apps (#764: one
+   * `UserService` per NestJS app) are kept apart. Optionally narrowed by a
+   * `file` path/suffix first.
+   */
+  private groupDefinitions(
+    nodes: Node[],
+    fileFilter: string | undefined
+  ): { groups: Node[][]; filteredOut: boolean } {
+    let pool = nodes;
+    let filteredOut = false;
+    if (fileFilter) {
+      const wanted = fileFilter.replace(/^\.\//, '');
+      const narrowed = pool.filter(
+        (n) => n.filePath === wanted || n.filePath.endsWith(wanted) || n.filePath.endsWith(`/${wanted}`)
+      );
+      if (narrowed.length > 0) {
+        pool = narrowed;
+      } else {
+        filteredOut = true;
+      }
+    }
+    const byDef = new Map<string, Node[]>();
+    for (const n of pool) {
+      const key = `${n.filePath}|${n.qualifiedName}`;
+      const group = byDef.get(key);
+      if (group) group.push(n);
+      else byDef.set(key, [n]);
+    }
+    return { groups: [...byDef.values()], filteredOut };
+  }
+
+  /** Section heading for one distinct definition in grouped output. */
+  private definitionHeading(group: Node[]): string {
+    const head = group[0]!;
+    const line = head.startLine ? `:${head.startLine}` : '';
+    return `### ${head.qualifiedName} (${head.kind}) — ${head.filePath}${line}`;
+  }
+
+  /**
    * Handle codegraph_callers
    */
   private async handleCallers(args: Record<string, unknown>): Promise<ToolResult> {
@@ -1161,30 +1292,68 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
+    const fileFilter = typeof args.file === 'string' ? args.file : undefined;
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate callers across all matching symbols
-    const seen = new Set<string>();
-    const allCallers: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallers(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallers.push(c.node);
+    const { groups, filteredOut } = this.groupDefinitions(allMatches.nodes, fileFilter);
+    const filterNote = filteredOut
+      ? `\n\n> **Note:** no definition of "${symbol}" matches file "${fileFilter}" — showing all definitions instead.`
+      : '';
+
+    const collect = (defNodes: Node[]) => {
+      const seen = new Set<string>();
+      const callers: Node[] = [];
+      const labels = new Map<string, string>();
+      for (const node of defNodes) {
+        for (const c of cg.getCallers(node.id)) {
+          if (!seen.has(c.node.id)) {
+            seen.add(c.node.id);
+            callers.push(c.node);
+            const label = this.edgeLabel(c.edge);
+            if (label) labels.set(c.node.id, label);
+          }
         }
       }
+      return { callers, labels };
+    };
+
+    // Single definition (or same-file overloads): the familiar flat list.
+    if (groups.length === 1) {
+      const { callers, labels } = collect(groups[0]!);
+      if (callers.length === 0) {
+        return this.textResult(`No callers found for "${symbol}"${allMatches.note}${filterNote}`);
+      }
+      // A successful `file` narrowing makes the multi-symbol aggregation note
+      // stale — suppress it.
+      const note = fileFilter && !filteredOut ? '' : allMatches.note;
+      const formatted = this.formatNodeList(callers.slice(0, limit), `Callers of ${symbol}`, labels) + note + filterNote;
+      return this.textResult(this.truncateOutput(formatted));
     }
 
-    if (allCallers.length === 0) {
-      return this.textResult(`No callers found for "${symbol}"${allMatches.note}`);
+    // Multiple DISTINCT definitions (#764): one section per definition so an
+    // agent never mistakes one app's callers for another's. Narrow with
+    // `file` to focus a single definition.
+    const lines: string[] = [
+      `## Callers of ${symbol} — ${groups.length} distinct definitions (narrow with \`file\`)`,
+    ];
+    for (const group of groups) {
+      const { callers, labels } = collect(group);
+      lines.push('', this.definitionHeading(group));
+      if (callers.length === 0) {
+        lines.push('- (no callers)');
+        continue;
+      }
+      for (const node of callers.slice(0, limit)) {
+        const location = node.startLine ? `:${node.startLine}` : '';
+        const label = labels.get(node.id);
+        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+      }
     }
-
-    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(lines.join('\n') + filterNote));
   }
 
   /**
@@ -1196,30 +1365,65 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
+    const fileFilter = typeof args.file === 'string' ? args.file : undefined;
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate callees across all matching symbols
-    const seen = new Set<string>();
-    const allCallees: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallees(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallees.push(c.node);
+    const { groups, filteredOut } = this.groupDefinitions(allMatches.nodes, fileFilter);
+    const filterNote = filteredOut
+      ? `\n\n> **Note:** no definition of "${symbol}" matches file "${fileFilter}" — showing all definitions instead.`
+      : '';
+
+    const collect = (defNodes: Node[]) => {
+      const seen = new Set<string>();
+      const callees: Node[] = [];
+      const labels = new Map<string, string>();
+      for (const node of defNodes) {
+        for (const c of cg.getCallees(node.id)) {
+          if (!seen.has(c.node.id)) {
+            seen.add(c.node.id);
+            callees.push(c.node);
+            const label = this.edgeLabel(c.edge);
+            if (label) labels.set(c.node.id, label);
+          }
         }
       }
+      return { callees, labels };
+    };
+
+    if (groups.length === 1) {
+      const { callees, labels } = collect(groups[0]!);
+      if (callees.length === 0) {
+        return this.textResult(`No callees found for "${symbol}"${allMatches.note}${filterNote}`);
+      }
+      // A successful `file` narrowing makes the multi-symbol aggregation note
+      // stale — suppress it.
+      const note = fileFilter && !filteredOut ? '' : allMatches.note;
+      const formatted = this.formatNodeList(callees.slice(0, limit), `Callees of ${symbol}`, labels) + note + filterNote;
+      return this.textResult(this.truncateOutput(formatted));
     }
 
-    if (allCallees.length === 0) {
-      return this.textResult(`No callees found for "${symbol}"${allMatches.note}`);
+    // Multiple DISTINCT definitions (#764): per-definition sections.
+    const lines: string[] = [
+      `## Callees of ${symbol} — ${groups.length} distinct definitions (narrow with \`file\`)`,
+    ];
+    for (const group of groups) {
+      const { callees, labels } = collect(group);
+      lines.push('', this.definitionHeading(group));
+      if (callees.length === 0) {
+        lines.push('- (no callees)');
+        continue;
+      }
+      for (const node of callees.slice(0, limit)) {
+        const location = node.startLine ? `:${node.startLine}` : '';
+        const label = labels.get(node.id);
+        lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`);
+      }
     }
-
-    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    return this.textResult(this.truncateOutput(lines.join('\n') + filterNote));
   }
 
   /**
@@ -1231,39 +1435,59 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const depth = clamp((args.depth as number) || 2, 1, 10);
+    const fileFilter = typeof args.file === 'string' ? args.file : undefined;
 
     const allMatches = this.findAllSymbols(cg, symbol);
     if (allMatches.nodes.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate impact across all matching symbols
-    const mergedNodes = new Map<string, Node>();
-    const mergedEdges: Edge[] = [];
-    const seenEdges = new Set<string>();
+    const { groups, filteredOut } = this.groupDefinitions(allMatches.nodes, fileFilter);
+    const filterNote = filteredOut
+      ? `\n\n> **Note:** no definition of "${symbol}" matches file "${fileFilter}" — showing all definitions instead.`
+      : '';
 
-    for (const node of allMatches.nodes) {
-      const impact = cg.getImpactRadius(node.id, depth);
-      for (const [id, n] of impact.nodes) {
-        mergedNodes.set(id, n);
-      }
-      for (const e of impact.edges) {
-        const key = `${e.source}->${e.target}:${e.kind}`;
-        if (!seenEdges.has(key)) {
-          seenEdges.add(key);
-          mergedEdges.push(e);
+    const impactOf = (defNodes: Node[]) => {
+      const mergedNodes = new Map<string, Node>();
+      const mergedEdges: Edge[] = [];
+      const seenEdges = new Set<string>();
+      for (const node of defNodes) {
+        const impact = cg.getImpactRadius(node.id, depth);
+        for (const [id, n] of impact.nodes) {
+          mergedNodes.set(id, n);
+        }
+        for (const e of impact.edges) {
+          const key = `${e.source}->${e.target}:${e.kind}`;
+          if (!seenEdges.has(key)) {
+            seenEdges.add(key);
+            mergedEdges.push(e);
+          }
         }
       }
-    }
-
-    const mergedImpact = {
-      nodes: mergedNodes,
-      edges: mergedEdges,
-      roots: allMatches.nodes.map(n => n.id),
+      return { nodes: mergedNodes, edges: mergedEdges, roots: defNodes.map((n) => n.id) };
     };
 
-    const formatted = this.formatImpact(symbol, mergedImpact) + allMatches.note;
-    return this.textResult(this.truncateOutput(formatted));
+    // Single definition (or same-file overloads): the familiar merged report.
+    if (groups.length === 1) {
+      const formatted = this.formatImpact(symbol, impactOf(groups[0]!)) + (fileFilter && !filteredOut ? "" : allMatches.note) + filterNote;
+      return this.textResult(this.truncateOutput(formatted));
+    }
+
+    // Multiple DISTINCT definitions (#764): a blast radius PER definition —
+    // merging unrelated same-named classes (one UserService per monorepo app)
+    // overstated impact and confused agents. Narrow with `file`.
+    const sections: string[] = [
+      `## Impact of ${symbol} — ${groups.length} distinct definitions (each with its own blast radius; narrow with \`file\`)`,
+    ];
+    for (const group of groups) {
+      const head = group[0]!;
+      const line = head.startLine ? `:${head.startLine}` : '';
+      sections.push(
+        '',
+        this.formatImpact(`${head.qualifiedName} (${head.filePath}${line})`, impactOf(group))
+      );
+    }
+    return this.textResult(this.truncateOutput(sections.join('\n') + filterNote));
   }
 
   /**
@@ -1473,7 +1697,7 @@ export class ToolHandler {
       // names (Class.method / Class::method) — the agent's most precise input,
       // resolved exactly by findAllSymbols. (The old strip mangled Class.method
       // into Class, throwing the method away.)
-      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte)$/i;
+      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro)$/i;
       const tokens = [...new Set(
         query.split(/[\s,()[\]]+/)
           .map((t) => t.replace(FILE_EXT, '').trim())
@@ -1821,7 +2045,7 @@ export class ToolHandler {
     // agent explicitly named is in the subgraph and its file is scored.
     const namedSeedIds = new Set<string>();
     {
-      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte)$/i;
+      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       const isTestPath = (p: string) => /(^|\/)(tests?|specs?|__tests__|testdata|mocks?|fixtures?)\//i.test(p) || /\.(test|spec)\.[a-z]+$/i.test(p);
       const bodyLines = (n: Node) => Math.max(0, (n.endLine ?? n.startLine) - n.startLine);
@@ -3510,16 +3734,35 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeList(nodes: Node[], title: string): string {
+  private formatNodeList(nodes: Node[], title: string, labels?: Map<string, string>): string {
     const lines: string[] = [`## ${title} (${nodes.length} found)`, ''];
 
     for (const node of nodes) {
       const location = node.startLine ? `:${node.startLine}` : '';
-      // Compact: just name, kind, location
-      lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}`);
+      // Compact: just name, kind, location — plus the relationship when it
+      // isn't a plain call (callback registration, instantiation, …).
+      const label = labels?.get(node.id);
+      lines.push(
+        `- ${node.name} (${node.kind}) - ${node.filePath}${location}${label ? ` — via ${label}` : ''}`
+      );
     }
 
     return lines.join('\n');
+  }
+
+  /**
+   * Relationship label for a non-`calls` edge in callers/callees lists. A
+   * function-as-value edge (#756) is the high-signal one: `callers(cb)`
+   * showing "via callback registration" tells the agent this is where the
+   * callback is WIRED, not where it's invoked.
+   */
+  private edgeLabel(edge: Edge): string | null {
+    if (edge.kind === 'calls') return null;
+    if (edge.metadata?.fnRef === true) return 'callback registration';
+    if (edge.kind === 'instantiates') return 'instantiation';
+    if (edge.kind === 'imports') return 'import';
+    if (edge.kind === 'references') return 'reference';
+    return edge.kind;
   }
 
   private formatImpact(symbol: string, impact: Subgraph): string {

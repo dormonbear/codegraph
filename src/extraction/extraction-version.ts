@@ -35,4 +35,5 @@
 // v10: P3 cross-layer LWC field binds — lightning-input-field → sobject_field.
 // v11: P4 field metadata refs — Layout/ValidationRule/formula → sobject_field (field_impact).
 // v15: merged upstream main (was at 14) into the Salesforce fork.
-export const EXTRACTION_VERSION = 15;
+// v25: merged upstream main (was at 24) into the Salesforce fork.
+export const EXTRACTION_VERSION = 25;
