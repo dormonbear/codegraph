@@ -1767,6 +1767,13 @@ export class ToolHandler {
       }
       if (impact.childObjects.length > 30) out.push(`  …and ${impact.childObjects.length - 30} more`);
     }
+    if (impact.parentObjects.length > 0) {
+      out.push(``, `Looks up to ${impact.parentObjects.length} object(s) (this object's own lookup/master-detail fields):`);
+      for (const p of impact.parentObjects.slice(0, 30)) {
+        out.push(`  ${p.object} (via ${p.via})`);
+      }
+      if (impact.parentObjects.length > 30) out.push(`  …and ${impact.parentObjects.length - 30} more`);
+    }
     if (impact.fields.length > 0) {
       const totalFieldUsages = impact.fields.reduce((s, f) => s + f.usageCount, 0);
       out.push(``, `⚠ Owns ${impact.fields.length} field(s) (${totalFieldUsages} field-usage site(s)) — all deleted with the object:`);

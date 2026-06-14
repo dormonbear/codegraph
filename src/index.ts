@@ -1142,9 +1142,10 @@ export class CodeGraph {
     metadataRefs: Array<{ name: string; type: string; file: string }>;
     fields: Array<{ qualifiedName: string; signature: string; usageCount: number }>;
     childObjects: Array<{ object: string; via: string }>;
+    parentObjects: Array<{ object: string; via: string }>;
   } {
     const object = this.getObject(objectName);
-    if (!object) return { object: null, kind: '', usages: [], metadataRefs: [], fields: [], childObjects: [] };
+    if (!object) return { object: null, kind: '', usages: [], metadataRefs: [], fields: [], childObjects: [], parentObjects: [] };
     const usages = this.getObjectUsages(objectName, [
       'object_soql_from', 'object_dml', 'object_type_ref', 'object_schema_ref',
     ]);
@@ -1160,15 +1161,28 @@ export class CodeGraph {
     // Roll up the object's fields (qualifiedName `Object.Field`) with each
     // field's usage-site count — deleting the object deletes every field too.
     const prefix = `${objectName}.`;
-    const fields = this.queries
+    const ownedFields = this.queries
       .getNodesByKind('sobject_field')
-      .filter((n) => n.qualifiedName.startsWith(prefix))
+      .filter((n) => n.qualifiedName.startsWith(prefix));
+    const fields = ownedFields
       .map((f) => ({
         qualifiedName: f.qualifiedName,
         signature: f.signature ?? 'Unknown',
         usageCount: this.getFieldUsages(f.qualifiedName).length,
       }))
       .sort((a, b) => b.usageCount - a.usageCount);
+    // Parent objects: this object's OWN lookup/master-detail fields and the
+    // objects they reference (outgoing direction — what this object depends on).
+    // referenceTo is stashed in the field node's typeParameters.
+    const parentSeen = new Set<string>();
+    const parentObjects: Array<{ object: string; via: string }> = [];
+    for (const f of ownedFields) {
+      const target = f.typeParameters?.[0];
+      if (!target || parentSeen.has(f.name)) continue;
+      parentSeen.add(f.name);
+      parentObjects.push({ object: target, via: f.name });
+    }
+    parentObjects.sort((a, b) => a.object.localeCompare(b.object));
     // Child objects: lookup/master-detail fields that point AT this object
     // (incoming object_relationship edges). They orphan when this object is
     // deleted — the relationship blast radius a field-by-field view misses.
@@ -1185,7 +1199,7 @@ export class CodeGraph {
       childObjects.push({ object: childObj, via: field.name });
     }
     childObjects.sort((a, b) => a.object.localeCompare(b.object));
-    return { object, kind: object.signature ?? '', usages, metadataRefs, fields, childObjects };
+    return { object, kind: object.signature ?? '', usages, metadataRefs, fields, childObjects, parentObjects };
   }
 
   /**

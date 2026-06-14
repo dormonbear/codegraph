@@ -7532,6 +7532,8 @@ describe('Aura extraction + resolver', () => {
       expect(metaTypes).toEqual(new Set(['Layout', 'Flow', 'RecordType', 'PermissionSet']));
       // Relationship: Task__c has a lookup to Milestone__c → orphans on delete.
       expect(impact.childObjects).toEqual([{ object: 'Task__c', via: 'Milestone__c' }]);
+      // Outgoing direction: Task__c's own lookup → Milestone__c is its parent.
+      expect(cg.getObjectImpact('Task__c').parentObjects).toEqual([{ object: 'Milestone__c', via: 'Milestone__c' }]);
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
