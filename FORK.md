@@ -64,20 +64,17 @@ After merging:
 
 ## Versioning policy
 
-`codegraph-sf` uses its **own independent SemVer line**, decoupled from upstream's
-version number. Bump by what the change means to a *consumer*, regardless of whether
-it came from your Salesforce work or a merged-upstream change:
+The authoritative policy is **[`VERSIONING.md`](VERSIONING.md)** (SemVer 2.0.0,
+independent fork line). In short:
 
-| This release contains | bump |
-|---|---|
-| upstream bugfix / your fix | patch |
-| upstream feature / your feature | minor |
-| breaking change (either side) | major |
+- **PATCH is the default** — including **merging upstream** (upstream shipping
+  features does NOT make it a minor for us; our tool contracts are unchanged).
+- **MINOR** only when the **fork** adds a user-facing capability (a new MCP tool,
+  a new index layer).
+- **MAJOR** for a backwards-incompatible change to our own tools.
 
-Do **not** mirror upstream's number or use a `-sf` prerelease suffix — npm would treat
-`X.Y.Z-sf.N` as a prerelease (excluded from `^` ranges) and you'd lose normal SemVer
-semantics for your own breaking changes. The upstream base is tracked in `forkedFrom`
-(queryable: `npm view codegraph-sf forkedFrom`), not in the version string.
+Never mirror upstream's number; the upstream base is tracked in `forkedFrom`
+(`npm view codegraph-sf forkedFrom`), not the version string.
 
 ## Publish a new version
 

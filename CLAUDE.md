@@ -202,6 +202,17 @@ For any Windows-specific PR, bug, or implementation, validate it on the real Win
 
 ## Releases
 
+> **Fork note (codegraph-sf):** this fork publishes on its **own** independent
+> version line and process — **`VERSIONING.md`** is the authoritative versioning
+> policy (SemVer 2.0.0; PATCH is the default, an upstream-sync is a PATCH, MINOR
+> only for a new fork capability), **`FORK.md`** is the release mechanics, and
+> **`CHANGELOG-SF.md`** is the fork's release log (separate from `CHANGELOG.md`).
+> The fork publishes via `.github/workflows/npm-publish.yml` (tag → npm + GitHub
+> Release), NOT the upstream flow described below. Read those three before
+> bumping a version.
+
+The rest of this section describes the **upstream** project's release flow.
+
 Released to npm and mirrored as [GitHub Releases](https://github.com/colbymchenry/codegraph/releases). `CHANGELOG.md` is the source of truth; GitHub Release notes are extracted from it.
 
 ### Writing changelog entries
