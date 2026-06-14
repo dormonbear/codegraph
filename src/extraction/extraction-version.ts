@@ -39,4 +39,5 @@
 // v26: SObject OBJECT layer — `sobject` nodes + object_soql_from/dml/type_ref/schema_ref/metadata_ref edges.
 // v27: object_metadata_ref from Flow / PermissionSet / Profile / RecordType declarative metadata.
 // v28: object_relationship edges — lookup/master-detail field → its referenceTo object (orphan-on-delete).
-export const EXTRACTION_VERSION = 28;
+// v29: gitignore-exempt SObject metadata + usage-inferred nodes + polymorphic lookups + master-detail signature.
+export const EXTRACTION_VERSION = 29;

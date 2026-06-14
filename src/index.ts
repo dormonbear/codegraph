@@ -8,6 +8,7 @@
 import * as path from 'path';
 import {
   Node,
+  NodeKind,
   Edge,
   EdgeKind,
   FileRecord,
@@ -49,6 +50,7 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
+import { generateNodeId } from './extraction/tree-sitter-helpers';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import { CodeGraphPackageVersion } from './mcp/version';
@@ -361,6 +363,13 @@ export class CodeGraph {
 
         // Resolve references to create call/import/extends edges
         if (result.success && result.filesIndexed > 0) {
+          // (viva-local) BEFORE resolution: infer SObject/field nodes from usage
+          // when the schema metadata is absent (managed-package objects, standard
+          // objects, or a gitignored objects/ the carve-out couldn't reach). Must
+          // run before the resolver consumes the `@object/`/`@field/` refs — the
+          // batched pass below then resolves the usages onto the inferred nodes.
+          this.synthesizeInferredSObjects();
+
           // Get count without loading all refs into memory
           const unresolvedCount = this.queries.getUnresolvedReferencesCount();
 
@@ -467,6 +476,10 @@ export class CodeGraph {
 
         // Resolve references if files were updated
         if (result.filesAdded > 0 || result.filesModified > 0) {
+          // (viva-local) Infer SObject/field nodes from usage before resolving so
+          // newly-referenced-but-undefined objects/fields get a node (see the
+          // full-index path for rationale).
+          this.synthesizeInferredSObjects();
           if (result.changedFilePaths) {
             // Scope resolution to changed files (git fast path — bounded set)
             const unresolvedRefs = this.queries.getUnresolvedReferencesByFiles(result.changedFilePaths);
@@ -1177,10 +1190,12 @@ export class CodeGraph {
     const parentSeen = new Set<string>();
     const parentObjects: Array<{ object: string; via: string }> = [];
     for (const f of ownedFields) {
-      const target = f.typeParameters?.[0];
-      if (!target || parentSeen.has(f.name)) continue;
-      parentSeen.add(f.name);
-      parentObjects.push({ object: target, via: f.name });
+      for (const target of f.typeParameters ?? []) { // polymorphic lookups → several
+        const key = `${f.name}->${target}`;
+        if (parentSeen.has(key)) continue;
+        parentSeen.add(key);
+        parentObjects.push({ object: target, via: f.name });
+      }
     }
     parentObjects.sort((a, b) => a.object.localeCompare(b.object));
     // Child objects: lookup/master-detail fields that point AT this object
@@ -1200,6 +1215,56 @@ export class CodeGraph {
     }
     childObjects.sort((a, b) => a.object.localeCompare(b.object));
     return { object, kind: object.signature ?? '', usages, metadataRefs, fields, childObjects, parentObjects };
+  }
+
+  /**
+   * (viva-local) Usage inference. When SObject schema metadata is absent — a
+   * managed-package or standard object (Account/Contact never ship in source),
+   * or an objects/ dir the gitignore carve-out couldn't reach — the `@object/X`
+   * and `@field/X.Y` references emitted from Apex/SOQL/LWC have no target node and
+   * stay dangling. This fallback SYNTHESIZES a node (signature `Inferred …`) for
+   * each object/field that is referenced but undefined, then re-resolves so the
+   * usages connect. Deterministic (from source code), gated to high-confidence
+   * CODE-usage kinds (never metadata refs), so it can't invent objects from a
+   * stray token. Inferred nodes have no field TYPE / relationship / formula info —
+   * real metadata always wins because getObject/getField are checked first.
+   */
+  private synthesizeInferredSObjects(): void {
+    const OBJ_KINDS = new Set(['object_soql_from', 'object_dml', 'object_type_ref', 'object_schema_ref']);
+    const FIELD_KINDS = new Set(['field_read', 'field_write', 'field_soql_select', 'field_soql_filter', 'field_bind_lwc']);
+    const unresolved = this.queries.getUnresolvedReferences();
+    const objToSynth = new Set<string>();
+    const fieldToSynth = new Set<string>(); // qualifiedName `Object.Field`
+    for (const ref of unresolved) {
+      const n = ref.referenceName;
+      if (n.startsWith('@object/') && OBJ_KINDS.has(ref.referenceKind)) {
+        const obj = n.slice('@object/'.length);
+        if (obj && !this.getObject(obj)) objToSynth.add(obj);
+      } else if (n.startsWith('@field/') && FIELD_KINDS.has(ref.referenceKind)) {
+        const qn = n.slice('@field/'.length);
+        const dot = qn.indexOf('.');
+        if (dot <= 0) continue;
+        if (!this.getField(qn)) {
+          fieldToSynth.add(qn);
+          const obj = qn.slice(0, dot);
+          if (!this.getObject(obj)) objToSynth.add(obj);
+        }
+      }
+    }
+    if (objToSynth.size === 0 && fieldToSynth.size === 0) return;
+    const now = Date.now();
+    const mk = (kind: NodeKind, name: string, qn: string, sig: string): Node => ({
+      id: generateNodeId('<inferred>', kind, qn, 1),
+      kind, name, qualifiedName: qn, filePath: '<inferred>', language: 'apex',
+      startLine: 1, endLine: 1, startColumn: 0, endColumn: 0,
+      signature: sig, isExported: true, updatedAt: now,
+    });
+    const nodes: Node[] = [];
+    for (const o of objToSynth) nodes.push(mk('sobject', o, o, 'Inferred Object'));
+    for (const qn of fieldToSynth) nodes.push(mk('sobject_field', qn.slice(qn.indexOf('.') + 1), qn, 'Inferred'));
+    this.queries.insertNodes(nodes);
+    // Edges are created by the resolution pass that runs next (the inserted
+    // nodes are now valid `@object/`/`@field/` resolution targets).
   }
 
   /**

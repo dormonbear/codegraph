@@ -96,17 +96,17 @@ export class SObjectSchemaExtractor {
    * is navigable parent↔child. Polymorphic lookups expose only the first target.
    */
   private extractRelationshipRef(fieldNode: Node): void {
-    const target = fieldNode.typeParameters?.[0];
-    if (!target) return;
-    this.unresolvedReferences.push({
-      fromNodeId: fieldNode.id,
-      referenceName: `@object/${target}`,
-      referenceKind: 'object_relationship',
-      line: 1,
-      column: 0,
-      filePath: this.filePath,
-      language: 'apex',
-    });
+    for (const target of fieldNode.typeParameters ?? []) {
+      this.unresolvedReferences.push({
+        fromNodeId: fieldNode.id,
+        referenceName: `@object/${target}`,
+        referenceKind: 'object_relationship',
+        line: 1,
+        column: 0,
+        filePath: this.filePath,
+        language: 'apex',
+      });
+    }
   }
 
   /** Object API name from `.../objects/<Object>/fields/<Field>.field-meta.xml`. */
@@ -122,6 +122,16 @@ export class SObjectSchemaExtractor {
     return m && m[1] ? m[1].trim() : null;
   }
 
+  /** All values of a repeated tag — `<referenceTo>` repeats on a polymorphic lookup. */
+  private tagAll(name: string): string[] {
+    const out: string[] = [];
+    for (const m of this.source.matchAll(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, 'gi'))) {
+      const v = m[1]?.trim();
+      if (v) out.push(v);
+    }
+    return out;
+  }
+
   private buildFieldNode(): Node | null {
     const objectName = this.objectApiName();
     if (!objectName) return null;
@@ -129,15 +139,17 @@ export class SObjectSchemaExtractor {
     const fieldName = this.tag('fullName') || fileName.replace(/\.field-meta\.xml$/i, '');
     if (!fieldName) return null;
 
-    const fieldType = this.tag('type'); // Text / Currency / Number / Formula side via <formula>
+    const fieldType = this.tag('type'); // Text / Currency / Lookup / MasterDetail / …
     const isFormula = /<formula>/i.test(this.source);
-    const referenceTo = this.tag('referenceTo'); // lookup/master-detail target object
+    const referenceTo = this.tagAll('referenceTo'); // 1+ targets (polymorphic lookups repeat the tag)
 
     // `signature` carries a compact human-readable type used by field_search /
-    // field_impact: "Formula(Currency)" | "Lookup:Milestone__c" | "Currency".
+    // field_impact. Master-detail is distinguished from lookup (cascade delete /
+    // roll-up): "MasterDetail:Parent__c" vs "Lookup:Account[,Opportunity]".
+    const isMasterDetail = /master/i.test(fieldType || '');
     let signature = fieldType || 'Unknown';
     if (isFormula) signature = `Formula(${fieldType || 'Unknown'})`;
-    else if (referenceTo) signature = `Lookup:${referenceTo}`;
+    else if (referenceTo.length) signature = `${isMasterDetail ? 'MasterDetail' : 'Lookup'}:${referenceTo.join(',')}`;
 
     const lines = this.source.split('\n');
     return {
@@ -152,8 +164,9 @@ export class SObjectSchemaExtractor {
       startColumn: 0,
       endColumn: lines[lines.length - 1]?.length || 0,
       signature,
-      // referenceTo (relationship target) stashed for P2 A__r.B__c resolution.
-      typeParameters: referenceTo ? [referenceTo] : undefined,
+      // referenceTo target(s) stashed for A__r.B__c path resolution (uses [0]) and
+      // object_relationship edges (uses all — polymorphic lookups have several).
+      typeParameters: referenceTo.length ? referenceTo : undefined,
       isExported: true,
       updatedAt: Date.now(),
     };

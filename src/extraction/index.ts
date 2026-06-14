@@ -17,7 +17,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, isSObjectObjectMeta, isSObjectFieldMeta, isSalesforceMetadata } from './grammars';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -415,11 +415,48 @@ export function scanDirectory(
         onProgress?.(count, filePath);
       }
     }
-    return files;
+    return mergeSalesforceMetadata(rootDir, files);
   }
 
   // Fallback: walk filesystem for non-git projects
-  return scanDirectoryWalk(rootDir, onProgress);
+  return mergeSalesforceMetadata(rootDir, scanDirectoryWalk(rootDir, onProgress));
+}
+
+/**
+ * (viva-local) SObject metadata is a first-class citizen of a Salesforce project,
+ * but teams routinely `.gitignore` `force-app/main/default/objects/*` (the schema
+ * is large and/or org-managed). `git ls-files` then hides it and the field/object
+ * layers come up empty (observed on a 2,936-object project). So for SDFX projects
+ * we ADD BACK the SObject metadata files (object/field-meta + Layout/VR/Flow/
+ * PermSet/Profile/RecordType) regardless of .gitignore — a deliberate carve-out,
+ * scoped to exactly those patterns, never arbitrary ignored files. Idempotent:
+ * unions with what git/walk already found.
+ */
+function mergeSalesforceMetadata(rootDir: string, files: string[]): string[] {
+  if (!fs.existsSync(path.join(rootDir, 'sfdx-project.json'))) return files; // SF projects only
+  const found = new Set(files.map(normalizePath));
+  const isSfMeta = (p: string) => isSObjectObjectMeta(p) || isSObjectFieldMeta(p) || isSalesforceMetadata(p);
+  const visited = new Set<string>();
+  const walk = (dir: string): void => {
+    let real: string;
+    try { real = fs.realpathSync(dir); } catch { return; }
+    if (visited.has(real)) return;
+    visited.add(real);
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      // Skip VCS, deps, build, and CodeGraph data dirs — but NOT .gitignore'd source.
+      if (e.name === '.git' || e.name === 'node_modules' || e.name === 'dist' || isCodeGraphDataDir(e.name)) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full);
+      else if (isSfMeta(full)) {
+        const rel = normalizePath(path.relative(rootDir, full));
+        if (!found.has(rel)) { found.add(rel); files.push(rel); }
+      }
+    }
+  };
+  walk(rootDir);
+  return files;
 }
 
 /**
@@ -445,10 +482,10 @@ export async function scanDirectoryAsync(
         }
       }
     }
-    return files;
+    return mergeSalesforceMetadata(rootDir, files);
   }
 
-  return scanDirectoryWalk(rootDir, onProgress);
+  return mergeSalesforceMetadata(rootDir, scanDirectoryWalk(rootDir, onProgress));
 }
 
 /**

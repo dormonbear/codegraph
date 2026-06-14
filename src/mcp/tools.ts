@@ -1742,6 +1742,9 @@ export class ToolHandler {
     const count = (k: string) => impact.usages.filter((u) => u.kind === k).length;
     const out: string[] = [
       `Impact of renaming/removing ${impact.object.qualifiedName} (${impact.kind})`,
+      ...((impact.kind || '').startsWith('Inferred')
+        ? [`ⓘ Inferred from usage — no schema metadata indexed for this object (objects/ may be gitignored, or it is a standard/managed-package object). Field types, relationships, and declarative refs are NOT available.`]
+        : []),
       ``,
       `Code usages (${impact.usages.length}): ` +
         `soql_from=${count('object_soql_from')} dml=${count('object_dml')} ` +

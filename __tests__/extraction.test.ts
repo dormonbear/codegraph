@@ -7525,15 +7525,57 @@ describe('Aura extraction + resolver', () => {
       // Layout + Flow + RecordType + PermissionSet → 4 distinct metadata refs.
       expect(byKind('object_metadata_ref')).toBe(4);
 
-      // Impact roll-up: both fields owned; metadata covers code-invisible breakers.
+      // Impact roll-up: both metadata fields owned (with real type signatures);
+      // `SELECT Id` also infers Milestone__c.Id (standard Id has no field-meta).
       const impact = cg.getObjectImpact('Milestone__c');
-      expect(impact.fields.map((f) => f.qualifiedName).sort()).toEqual(['Milestone__c.Amount__c', 'Milestone__c.Name__c']);
+      const fqns = impact.fields.map((f) => f.qualifiedName);
+      expect(fqns).toContain('Milestone__c.Amount__c');
+      expect(fqns).toContain('Milestone__c.Name__c');
+      expect(impact.fields.find((f) => f.qualifiedName === 'Milestone__c.Amount__c')?.signature).toBe('Currency');
+      expect(impact.fields.find((f) => f.qualifiedName === 'Milestone__c.Id')?.signature).toBe('Inferred');
       const metaTypes = new Set(impact.metadataRefs.map((r) => r.type));
       expect(metaTypes).toEqual(new Set(['Layout', 'Flow', 'RecordType', 'PermissionSet']));
       // Relationship: Task__c has a lookup to Milestone__c → orphans on delete.
       expect(impact.childObjects).toEqual([{ object: 'Task__c', via: 'Milestone__c' }]);
       // Outgoing direction: Task__c's own lookup → Milestone__c is its parent.
       expect(cg.getObjectImpact('Task__c').parentObjects).toEqual([{ object: 'Milestone__c', via: 'Milestone__c' }]);
+      cg.destroy();
+    } finally { cleanupTempDir(dir); }
+  });
+
+  // viva-local (never upstream): P4 usage inference — schema from usage, no metadata.
+  it('infers SObject/field nodes from usage when no objects/ metadata exists', async () => {
+    const dir = createTempDir();
+    try {
+      const classes = path.join(dir, 'force-app/main/default/classes');
+      fs.mkdirSync(classes, { recursive: true });
+      // NO objects/ or fields/ metadata — Account is a standard object, never in source.
+      fs.writeFileSync(path.join(classes, 'Svc.cls'),
+        `public class Svc {\n` +
+        `  public void run() {\n` +
+        `    List<Account> accs = [SELECT Id, Name FROM Account WHERE Name != null];\n` +
+        `    Account a = new Account();\n` +
+        `    insert a;\n` +
+        `  }\n}\n`);
+
+      const cg = CodeGraph.initSync(dir, {
+        config: { include: ['**/*.cls'], exclude: [] },
+      });
+      await cg.indexAll();
+      cg.resolveReferences();
+
+      // Object inferred from SOQL FROM / DML usage.
+      const obj = cg.getObject('Account');
+      expect(obj?.kind).toBe('sobject');
+      expect(obj?.signature).toBe('Inferred Object');
+      const u = cg.getObjectUsages('Account');
+      expect(u.filter((x) => x.kind === 'object_soql_from').length).toBeGreaterThanOrEqual(1);
+      expect(u.filter((x) => x.kind === 'object_dml').length).toBeGreaterThanOrEqual(1);
+
+      // Field inferred from SOQL select usage.
+      const f = cg.getField('Account.Name');
+      expect(f?.signature).toBe('Inferred');
+      expect(cg.getFieldUsages('Account.Name').filter((x) => x.kind === 'field_soql_select').length).toBeGreaterThanOrEqual(1);
       cg.destroy();
     } finally { cleanupTempDir(dir); }
   });
