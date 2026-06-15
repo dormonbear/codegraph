@@ -1,6 +1,6 @@
 # codegraph-sf — Salesforce performance hardening (design)
 
-**Date:** 2026-06-15 · **Branch:** `salesforce` (fork `codegraph-sf`) · **Status:** approved scope, pending spec review
+**Date:** 2026-06-15 · **Branch:** `perf/sf-perf-hardening` (fork `codegraph-sf`) · **Status:** implemented (see "Outcome" per workstream)
 
 ## Problem
 
@@ -90,6 +90,19 @@ Fix:
   candidates. A one-time full re-extraction (version bump) is still allowed but bounded
   and followed by a WAL truncate (①).
 
+**Outcome (implemented, evidence-based — narrowed from the above):** Measured first.
+The steady-state catch-up is **~5 s total** (parses the genuinely-changed files), not a
+hang — metadata files already honor the mtime/size pre-filter once tracked, so they are
+**not** re-hashed steady-state. The `Caught up 56590` was a **one-time** event: v0.5.0
+was the first version to index SObject metadata at all (the gitignore-exempt carve-out),
+so all ~56 k were "added" once, then tracked. The remaining fixed per-sync tax was the
+`mergeSalesforceMetadata` walk (~800 ms on omni-sf). **A metadata-walk cache was rejected:**
+the catch-up walk exists precisely to find edits made while the daemon was down, so any
+cache that *skips* the walk would miss offline changes — it cannot be both correct and
+faster. The real win was removing a **dead `realpathSync` loop-guard** from the walk
+(symlinked dirs are never recursed, so no cycle is reachable) — ~140 ms saved, byte-identical
+output, zero risk. Shipped with a carve-out characterization test.
+
 ### ④ Daemon/launcher lifecycle (durable)
 
 Two-process model: a launcher (`node codegraph serve`, no `--liftoff-only`) blocks in
@@ -112,6 +125,22 @@ Fix:
 - **Contract:** when a host session exits, all launcher + child + proxy processes for
   that session terminate within the watchdog poll interval; re-running a session does not
   accumulate processes; `codegraph daemon gc` reduces a leaked set to the live daemons.
+
+**Outcome (implemented — gc shipped; watchdog hardening deferred with diagnosis):**
+Confirmed mechanism: the PPID watchdog (`ppid-watchdog.ts`) probes the host with
+`process.kill(hostPpid, 0)` and has **no start-time identity check**. Over a long uptime
+the dead host's PID gets recycled, the probe sees the reused PID as alive, and the watchdog
+never fires → the `serve --mcp` process (and the launcher blocked in `spawnSync`) leak (38
+launcher orphans observed). The robust fix (capture + compare host process start-time) is a
+non-trivial **cross-platform** change (macOS `lstart` / Linux `/proc/<pid>/stat` field 22 /
+Windows) that risks false-positive shutdowns of live daemons if gotten wrong — so per the
+plan's "don't guess" guard it is **deferred** to its own change with real Linux/Windows
+reproduction. The agent-suggested `spawnSync` timeout was **rejected**: it would kill
+healthy long-lived daemons. Shipped instead: **`codegraph daemon gc`** — a manual,
+always-safe backstop that reaps orphaned `serve --mcp` processes (`ppid === 1` on POSIX, or
+a dead parent), with `--dry-run`. Daemons are disposable (respawned on the next tool call),
+so reaping is safe. Pure selection logic is unit-tested; POSIX-only for now (Windows relies
+on the watchdog).
 
 ## Cross-platform / risk notes
 
