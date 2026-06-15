@@ -40,4 +40,5 @@
 // v27: object_metadata_ref from Flow / PermissionSet / Profile / RecordType declarative metadata.
 // v28: object_relationship edges — lookup/master-detail field → its referenceTo object (orphan-on-delete).
 // v29: gitignore-exempt SObject metadata + usage-inferred nodes + polymorphic lookups + master-detail signature.
-export const EXTRACTION_VERSION = 29;
+// v30: upstream sync (1.0.1) — new R language extractor + cross-language extractor changes; forces one-time re-index.
+export const EXTRACTION_VERSION = 30;

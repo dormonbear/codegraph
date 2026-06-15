@@ -39,6 +39,7 @@ const WASM_GRAMMAR_FILES: Record<GrammarLanguage, string> = {
   pascal: 'tree-sitter-pascal.wasm',
   scala: 'tree-sitter-scala.wasm',
   lua: 'tree-sitter-lua.wasm',
+  r: 'tree-sitter-r.wasm',
   luau: 'tree-sitter-luau.wasm',
   objc: 'tree-sitter-objc.wasm',
 };
@@ -111,6 +112,7 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.svelte': 'svelte',
   '.vue': 'vue',
   '.astro': 'astro',
+  '.r': 'r',
   '.pas': 'pascal',
   '.dpr': 'pascal',
   '.dpk': 'pascal',
@@ -271,8 +273,8 @@ export async function loadGrammarsForLanguages(languages: Language[]): Promise<v
       // build (ABI 13) has no primary-constructor support and parses
       // `class Foo(...)` as an ERROR that swallows the whole class (#237); we
       // vendor the upstream ABI-15 tree-sitter-c-sharp 0.23.5 wasm, which parses
-      // primary constructors natively. Apex (fork) is likewise vendored.
-      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau' || lang === 'apex' || lang === 'csharp')
+      // primary constructors natively. Apex (fork) and R (upstream) are likewise vendored.
+      const wasmPath = (lang === 'pascal' || lang === 'scala' || lang === 'lua' || lang === 'luau' || lang === 'apex' || lang === 'csharp' || lang === 'r')
         ? path.join(__dirname, 'wasm', wasmFile)
         : require.resolve(`tree-sitter-wasms/out/${wasmFile}`);
       const language = await WasmLanguage.load(wasmPath);
@@ -465,6 +467,7 @@ export function getLanguageDisplayName(language: Language): string {
     python: 'Python',
     go: 'Go',
     rust: 'Rust',
+    r: 'R',
     java: 'Java',
     c: 'C',
     cpp: 'C++',

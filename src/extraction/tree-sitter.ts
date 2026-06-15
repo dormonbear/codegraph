@@ -228,6 +228,14 @@ export class TreeSitterExtractor {
   private nodes: Node[] = [];
   private edges: Edge[] = [];
   private unresolvedReferences: UnresolvedReference[] = [];
+  // Value-reference edges (default ON; set CODEGRAPH_VALUE_REFS=0 to disable; see flushValueRefs).
+  // Same-file reads of file-scope const/var symbols → `references` edges so impact analysis catches
+  // value consumers ("change this constant/table, affect its readers").
+  private static readonly VALUE_REF_LANGS = new Set<string>(['typescript', 'javascript', 'tsx']);
+  private static readonly MAX_VALUE_REF_NODES = 20_000;
+  private readonly valueRefsEnabled = process.env.CODEGRAPH_VALUE_REFS !== '0';
+  private fileScopeValues = new Map<string, string>();
+  private valueRefScopes: Array<{ id: string; node: SyntaxNode }> = [];
   private errors: ExtractionError[] = [];
   private extractor: LanguageExtractor | null = null;
   private nodeStack: string[] = []; // Stack of parent node IDs
@@ -341,6 +349,7 @@ export class TreeSitterExtractor {
       // Gate + flush function-as-value candidates (#756) while the file's
       // nodes and import refs are complete and the file node is still pushed.
       this.flushFnRefCandidates();
+      this.flushValueRefs();
 
       if (packageNodeId) this.nodeStack.pop();
       this.nodeStack.pop();
@@ -528,6 +537,96 @@ export class TreeSitterExtractor {
         line: c.line,
         column: c.column,
       });
+    }
+  }
+
+  /**
+   * Record value-reference bookkeeping as nodes are created: file-scope const/var symbols with
+   * distinctive names become reference targets; function/method/const/var symbols become reader
+   * scopes whose bodies flushValueRefs scans.
+   */
+  private captureValueRefScope(kind: NodeKind, name: string, id: string, node: SyntaxNode): void {
+    if ((kind === 'constant' || kind === 'variable') && name.length >= 3 && /[A-Z_]/.test(name)) {
+      const parentId = this.nodeStack[this.nodeStack.length - 1];
+      if (parentId?.startsWith('file:')) this.fileScopeValues.set(name, id);
+    }
+    if (kind === 'function' || kind === 'method' || kind === 'constant' || kind === 'variable') {
+      this.valueRefScopes.push({ id, node });
+    }
+  }
+
+  /**
+   * Emit same-file `references` edges from a symbol to the file-scope const/var it reads (TS/JS).
+   * The engine doesn't edge const→consumer, so impact analysis misses "change this table, affect
+   * its readers" (the ReScript-PR false positive). Same-file only (resolution is unambiguous),
+   * distinctive target names only (dodges the local-shadowing precision trap documented on
+   * function_ref), deduped per (reader, target). Default on (CODEGRAPH_VALUE_REFS=0 disables) +
+   * additive. Shadowed targets are pruned — see below.
+   */
+  private flushValueRefs(): void {
+    const scopes = this.valueRefScopes;
+    const targets = this.fileScopeValues;
+    this.valueRefScopes = [];
+    this.fileScopeValues = new Map();
+    if (!this.valueRefsEnabled || !TreeSitterExtractor.VALUE_REF_LANGS.has(this.language)) return;
+    if (targets.size === 0 || scopes.length === 0 || isGeneratedFile(this.filePath)) return;
+
+    // Prune SHADOWED targets. A name bound more than once in the file (e.g. a
+    // bundled/Emscripten `const Module` re-declared as an inner `var Module` /
+    // function param) resolves to the INNER binding for nested readers, so a
+    // file-scope edge to it is a false positive. Those inner re-declarations
+    // aren't extracted as graph nodes, so detect them at the syntax level:
+    // count `variable_declarator` names across the tree and drop any target
+    // bound twice or more. Single-binding (unambiguous) names are kept. This
+    // complements the path-based isGeneratedFile() check for content-minified
+    // bundles it can't catch by suffix.
+    if (this.tree) {
+      const declCounts = new Map<string, number>();
+      const dstack: SyntaxNode[] = [this.tree.rootNode];
+      let dvisited = 0;
+      while (dstack.length > 0 && dvisited < TreeSitterExtractor.MAX_VALUE_REF_NODES) {
+        const n = dstack.pop()!;
+        dvisited++;
+        if (n.type === 'variable_declarator') {
+          const nameNode = n.namedChild(0);
+          if (nameNode && nameNode.type === 'identifier') {
+            const nm = getNodeText(nameNode, this.source);
+            if (targets.has(nm)) declCounts.set(nm, (declCounts.get(nm) ?? 0) + 1);
+          }
+        }
+        for (let i = 0; i < n.namedChildCount; i++) {
+          const c = n.namedChild(i);
+          if (c) dstack.push(c);
+        }
+      }
+      for (const [nm, c] of declCounts) if (c > 1) targets.delete(nm);
+      if (targets.size === 0) return;
+    }
+
+    for (const scope of scopes) {
+      const seen = new Set<string>();
+      const stack: SyntaxNode[] = [scope.node];
+      let visited = 0;
+      while (stack.length > 0 && visited < TreeSitterExtractor.MAX_VALUE_REF_NODES) {
+        const n = stack.pop()!;
+        visited++;
+        if (n.type === 'identifier') {
+          const targetId = targets.get(getNodeText(n, this.source));
+          if (targetId && targetId !== scope.id && !seen.has(targetId)) {
+            seen.add(targetId);
+            this.edges.push({
+              source: scope.id,
+              target: targetId,
+              kind: 'references',
+              metadata: { valueRef: true },
+            });
+          }
+        }
+        for (let i = 0; i < n.namedChildCount; i++) {
+          const c = n.namedChild(i);
+          if (c) stack.push(c);
+        }
+      }
     }
   }
 
@@ -894,6 +993,8 @@ export class TreeSitterExtractor {
         });
       }
     }
+
+    if (this.valueRefsEnabled) this.captureValueRefScope(kind, name, id, node);
 
     return newNode;
   }
@@ -1273,8 +1374,10 @@ export class TreeSitterExtractor {
     if (!this.extractor) return;
 
     // Skip forward declarations and type references (no body = not a definition)
+    // — EXCEPT C# positional records (`record struct M(decimal Amount);`),
+    // complete definitions with no body block. (#831)
     const body = getChildByField(node, this.extractor.bodyField);
-    if (!body) return;
+    if (!body && node.type !== 'record_declaration') return;
 
     const name = extractName(node, this.source, this.extractor);
     const docstring = getPrecedingDocstring(node, this.source);
@@ -1295,15 +1398,18 @@ export class TreeSitterExtractor {
     // `record struct M(decimal Amount)` which the grammar nests here).
     this.extractCsharpPrimaryCtorParamRefs(node, structNode.id);
 
-    // Push to stack for field extraction
-    this.nodeStack.push(structNode.id);
-    for (let i = 0; i < body.namedChildCount; i++) {
-      const child = body.namedChild(i);
-      if (child) {
-        this.visitNode(child);
+    // Push to stack for field extraction (bodiless positional records have
+    // no members to visit)
+    if (body) {
+      this.nodeStack.push(structNode.id);
+      for (let i = 0; i < body.namedChildCount; i++) {
+        const child = body.namedChild(i);
+        if (child) {
+          this.visitNode(child);
+        }
       }
+      this.nodeStack.pop();
     }
-    this.nodeStack.pop();
   }
 
   /**

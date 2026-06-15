@@ -25,6 +25,7 @@ import { apexExtractor } from './apex';
 import { pascalExtractor } from './pascal';
 import { scalaExtractor } from './scala';
 import { luaExtractor } from './lua';
+import { rExtractor } from './r';
 import { luauExtractor } from './luau';
 import { objcExtractor } from './objc';
 
@@ -49,6 +50,7 @@ export const EXTRACTORS: Partial<Record<Language, LanguageExtractor>> = {
   pascal: pascalExtractor,
   scala: scalaExtractor,
   lua: luaExtractor,
+  r: rExtractor,
   luau: luauExtractor,
   objc: objcExtractor,
 };
