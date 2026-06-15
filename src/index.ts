@@ -1173,15 +1173,20 @@ export class CodeGraph {
     });
     // Roll up the object's fields (qualifiedName `Object.Field`) with each
     // field's usage-site count — deleting the object deletes every field too.
-    const prefix = `${objectName}.`;
-    const ownedFields = this.queries
-      .getNodesByKind('sobject_field')
-      .filter((n) => n.qualifiedName.startsWith(prefix));
+    const ownedFields = this.queries.getFieldsForObject(objectName);
+    // One grouped query for every field's usage count, replacing an N+1
+    // getFieldUsages() per field (each of which itself fanned out to a
+    // getNodeById per usage edge). Kinds MUST match getFieldUsages's default
+    // set so the rolled-up counts are byte-for-byte identical.
+    const usageCounts = this.queries.countDistinctUsageSitesByTarget(
+      ownedFields.map((f) => f.id),
+      ['field_read', 'field_write', 'field_soql_select', 'field_soql_filter', 'field_bind_lwc', 'field_bind_vf']
+    );
     const fields = ownedFields
       .map((f) => ({
         qualifiedName: f.qualifiedName,
         signature: f.signature ?? 'Unknown',
-        usageCount: this.getFieldUsages(f.qualifiedName).length,
+        usageCount: usageCounts.get(f.id) ?? 0,
       }))
       .sort((a, b) => b.usageCount - a.usageCount);
     // Parent objects: this object's OWN lookup/master-detail fields and the

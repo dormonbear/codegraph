@@ -211,6 +211,7 @@ export class QueryBuilder {
     getUnresolvedByName?: SqliteStatement;
     getNodesByName?: SqliteStatement;
     getNodesByQualifiedNameExact?: SqliteStatement;
+    getFieldsForObject?: SqliteStatement;
     getNodesByLowerName?: SqliteStatement;
     getUnresolvedCount?: SqliteStatement;
     getUnresolvedBatch?: SqliteStatement;
@@ -749,6 +750,53 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getNodesByQualifiedNameExact.all(qualifiedName) as NodeRow[];
     return rows.map(rowToNode);
+  }
+
+  /**
+   * (viva-local) All `sobject_field` nodes belonging to one SObject, by
+   * `Object.*` qualified-name prefix. Uses a RANGE scan on
+   * idx_nodes_qualified_name (BINARY collation) rather than LIKE: Salesforce
+   * API names contain `_`, which is a LIKE wildcard, so a LIKE prefix would
+   * leak sibling objects. Replaces the old
+   * `getNodesByKind('sobject_field').filter(startsWith)` that materialised
+   * EVERY field in the org just to keep one object's.
+   */
+  getFieldsForObject(objectName: string): Node[] {
+    if (!this.stmts.getFieldsForObject) {
+      this.stmts.getFieldsForObject = this.db.prepare(
+        "SELECT * FROM nodes WHERE qualified_name >= ? AND qualified_name < ? AND kind = 'sobject_field'"
+      );
+    }
+    const lo = `${objectName}.`;
+    const hi = `${objectName}.￿`;
+    const rows = this.stmts.getFieldsForObject.all(lo, hi) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * (viva-local) For each target node id, the number of DISTINCT usage SITES
+   * (source-file × line × edge-kind) across the given edge kinds — ONE grouped
+   * query replacing an N+1 loop of `getFieldUsages().length`. The DISTINCT key
+   * mirrors getFieldUsages's dedup exactly, so the counts are identical. The
+   * source node always exists (FK + `foreign_keys=ON`), so the INNER JOIN
+   * drops nothing.
+   */
+  countDistinctUsageSitesByTarget(targetIds: string[], kinds: EdgeKind[]): Map<string, number> {
+    const out = new Map<string, number>();
+    if (targetIds.length === 0 || kinds.length === 0) return out;
+    const sql = `
+      SELECT e.target AS target,
+             count(DISTINCT src.file_path || ':' || COALESCE(e.line, 0) || ':' || e.kind) AS c
+      FROM edges e
+      JOIN nodes src ON src.id = e.source
+      WHERE e.target IN (SELECT value FROM json_each(?))
+        AND e.kind IN (${kinds.map(() => '?').join(',')})
+      GROUP BY e.target`;
+    const rows = this.db
+      .prepare(sql)
+      .all(JSON.stringify(targetIds), ...kinds) as Array<{ target: string; c: number }>;
+    for (const r of rows) out.set(r.target, r.c);
+    return out;
   }
 
   /**
