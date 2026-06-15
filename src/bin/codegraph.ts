@@ -33,6 +33,7 @@ import { getGlyphs } from '../ui/glyphs';
 
 import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
+import { gcDaemons } from '../mcp/daemon-gc';
 import { EXTRACTION_VERSION } from '../extraction/extraction-version';
 
 // Lazy-load heavy modules (CodeGraph, runInstaller) to keep CLI startup fast.
@@ -1287,6 +1288,36 @@ program
     } catch (err) {
       error(`Failed to remove lock: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
+    }
+  });
+
+/**
+ * codegraph daemon gc
+ *
+ * Reap leaked/orphaned `codegraph serve --mcp` processes whose supervising host
+ * is gone (PID-recycle escapes the watchdog, #277). Daemons are disposable —
+ * the next MCP tool call respawns a fresh one — so this is always safe to run.
+ */
+const daemonCmd = program.command('daemon').description('Manage CodeGraph MCP daemons');
+daemonCmd
+  .command('gc')
+  .description('Reap leaked/orphaned codegraph MCP daemon processes')
+  .option('--dry-run', 'List orphaned processes without killing them')
+  .action((opts: { dryRun?: boolean }) => {
+    if (process.platform === 'win32') {
+      info('daemon gc is POSIX-only for now; the PPID watchdog reaps daemons on Windows.');
+      return;
+    }
+    const res = gcDaemons({ dryRun: opts.dryRun });
+    if (res.selected.length === 0) {
+      success(`No orphaned daemon processes found ${getGlyphs().dash} nothing to do`);
+      return;
+    }
+    if (res.dryRun) {
+      info(`Would reap ${res.selected.length} orphaned process(es): ${res.selected.join(', ')}`);
+      info('Re-run without --dry-run to kill them.');
+    } else {
+      success(`Reaped ${res.killed.length}/${res.selected.length} orphaned process(es): ${res.killed.join(', ')}`);
     }
   });
 
