@@ -31,6 +31,7 @@ function configureConnection(db: SqliteDatabase): void {
   db.pragma('busy_timeout = 5000');      // MUST be first — see above
   db.pragma('foreign_keys = ON');
   db.pragma('journal_mode = WAL');       // node:sqlite supports WAL on every platform
+  db.pragma('wal_autocheckpoint = 2000');// ≈8MB; self-bound (PASSIVE) between TRUNCATE runs
   db.pragma('synchronous = NORMAL');     // safe with WAL mode
   db.pragma('cache_size = -64000');      // 64 MB page cache
   db.pragma('temp_store = MEMORY');      // temp tables in memory
@@ -196,10 +197,12 @@ export class DatabaseConnection {
    *     ANALYZE. Without it, the query planner has no statistics on the
    *     freshly-bulk-loaded tables and can pick suboptimal indexes.
    *
-   *   - `PRAGMA wal_checkpoint(PASSIVE)` — fold pending WAL pages back
-   *     into the main database file so the WAL file doesn't grow
-   *     unboundedly between automatic checkpoints (auto-fires at 1000
-   *     pages by default; large indexAll runs blow past that).
+   *   - `PRAGMA wal_checkpoint(TRUNCATE)` — fold pending WAL pages back
+   *     into the main database file AND shrink the `-wal` file back to
+   *     zero. PASSIVE only resets the write pointer, leaving the file at
+   *     its high-water mark (observed: a re-extraction ballooned it to
+   *     5.5 GB and PASSIVE never reclaimed it), which makes every later
+   *     `walFindFrame` lookup scan a huge file. TRUNCATE reclaims it.
    *
    * Both operations are silently swallowed on failure — they're a
    * best-effort optimization, never load-bearing for correctness.
@@ -211,7 +214,7 @@ export class DatabaseConnection {
       // ignore
     }
     try {
-      this.db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     } catch {
       // ignore (e.g., not in WAL mode)
     }
