@@ -6,13 +6,18 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-15
+
 ### Fixes
 - **Salesforce object queries no longer hang on large orgs.** `codegraph_object_search` / `codegraph_object_impact` on an object with many fields (and an org with hundreds of thousands of edges) could take minutes; they now return in well under a second. Same results, far less work.
 - The on-disk graph no longer balloons: the database's write-ahead log is now bounded and reclaimed after each sync instead of growing without limit (a large re-index could otherwise leave a multi-gigabyte file behind).
 - Re-scanning a Salesforce project for changes is faster — the schema-metadata sweep dropped redundant filesystem work.
 
 ### New Features
+- Synced the upstream engine (`@colbymchenry/codegraph` v1.0.1) — adds **R** language support and upstream extraction/resolution improvements, all under the unchanged `codegraph` command.
 - New `codegraph daemon gc` command reaps leaked/orphaned MCP daemon processes (use `--dry-run` to preview). Handy if background `codegraph` processes accumulate across many editor sessions.
+
+> **Note:** upgrading rebuilds each project's index once on first use — the engine's extraction format advanced with the upstream sync.
 
 ## [0.5.0] - 2026-06-14
 
