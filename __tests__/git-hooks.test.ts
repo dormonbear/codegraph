@@ -21,6 +21,11 @@ import {
 
 function gitInit(dir: string): void {
   execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+  // Neutralize a developer's global core.hooksPath (e.g. ~/.config/git/hooks):
+  // the default-location tests assert hooks land in <repo>/.git/hooks, so pin
+  // this repo's hooksPath there regardless of inherited global/system config.
+  // Tests that exercise a custom hooksPath set their own local value afterward.
+  execFileSync('git', ['config', 'core.hooksPath', path.join(dir, '.git', 'hooks')], { cwd: dir, stdio: 'ignore' });
 }
 
 function isExecutable(file: string): boolean {
