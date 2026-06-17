@@ -411,14 +411,16 @@ describe('Shared MCP daemon (issue #411)', () => {
     const server = spawnServer(tempDir, env);
     servers.push(server);
     sendInitialize(server.child, `file://${tempDir}`, 1);
-    await waitFor(() => findResponse(server.stdout, 1), 10000);
+    // CI-load tolerance (#662 flake): daemon cold-start + first response can
+    // exceed 10s under runner contention ("too many open files"), so allow 20s.
+    await waitFor(() => findResponse(server.stdout, 1), 20000);
     await waitFor(() => server.stderr.some((l) => l.includes('Attached to shared daemon')), 8000);
     await waitFor(() => (readLockPid(realRoot) ?? 0) > 0, 8000);
     const daemonPid = readLockPid(realRoot)!;
 
     // A warm call goes through the daemon.
     sendMessage(server.child, { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'codegraph_status', arguments: {} } });
-    await waitFor(() => findResponse(server.stdout, 2), 10000);
+    await waitFor(() => findResponse(server.stdout, 2), 20000);
 
     // Kill the daemon out from under the live proxy.
     process.kill(daemonPid, 'SIGTERM');
@@ -431,5 +433,5 @@ describe('Shared MCP daemon (issue #411)', () => {
     const resp = await waitFor(() => findResponse(server.stdout, 3), 15000);
     expect(resp.result !== undefined || resp.error !== undefined).toBe(true);
     expect(isAlive(server.child.pid!)).toBe(true);
-  }, 45000);
+  }, 75000);
 });
