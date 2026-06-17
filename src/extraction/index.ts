@@ -1744,20 +1744,7 @@ export class ExtractionOrchestrator {
     }
 
     // Adds / modifications.
-    //
-    // This stat/read/hash pass is fully synchronous per file. On a large repo
-    // where a `git checkout`/`pull` bumped mtime on tens of thousands of files
-    // (e.g. a Salesforce org's whole objects/ metadata tree), running it as one
-    // uninterrupted block freezes the event loop for seconds — long enough to
-    // starve the MCP catch-up gate timeout and the liveness heartbeat (#850).
-    // Yield to the loop every few hundred files so timers and I/O stay serviced
-    // while the scan runs.
-    const SCAN_YIELD_EVERY = 256;
-    let scanned = 0;
     for (const filePath of currentFiles) {
-      if (++scanned % SCAN_YIELD_EVERY === 0) {
-        await new Promise<void>((resolve) => setImmediate(resolve));
-      }
       const fullPath = path.join(this.rootDir, filePath);
       const tracked = trackedMap.get(filePath);
 

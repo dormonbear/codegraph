@@ -6,8 +6,13 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-17
+
 ### Fixes
-- **The first query after opening a project no longer hangs on large Salesforce orgs.** When a git branch-switch or pull dirties tens of thousands of metadata files, CodeGraph reconciles them in the background instead of blocking your first `codegraph_explore` / `codegraph_search` until the whole catch-up finishes — it now serves the (slightly stale) graph within a few seconds while the sync completes behind the scenes. Two parts: the first query waits only briefly for the reconcile before serving, and the change-scan itself no longer freezes the server while it walks a huge metadata tree. Set `CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS=0` to restore the old wait-for-full-sync behavior.
+- **The first query after opening a project no longer hangs on large Salesforce orgs.** When a git branch-switch or pull dirties tens of thousands of metadata files, CodeGraph reconciles them in the background instead of blocking your first `codegraph_explore` / `codegraph_search` until the whole catch-up finishes — it now serves the (slightly stale) graph after a brief wait while the sync completes behind the scenes. Set `CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS=0` to restore the old wait-for-full-sync behavior.
+
+### New Features
+- Synced the upstream engine — impact analysis now follows same-file value references (a value assigned in one place and used in another) across C/C++, C#, Dart, Java, Kotlin, Scala, and more, so "what breaks if I change this" is more complete.
 
 ## [0.5.1] - 2026-06-15
 

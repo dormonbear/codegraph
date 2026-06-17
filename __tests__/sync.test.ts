@@ -152,55 +152,6 @@ describe('Sync Module', () => {
     });
   });
 
-  describe('sync() yields to the event loop during the change-detection scan', () => {
-    let testDir: string;
-    let cg: CodeGraph;
-    const N = 2000;
-
-    beforeEach(async () => {
-      testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-sync-yield-'));
-      const srcDir = path.join(testDir, 'src');
-      fs.mkdirSync(srcDir);
-      for (let i = 0; i < N; i++) {
-        fs.writeFileSync(path.join(srcDir, `mod${i}.ts`), `export function fn${i}() { return ${i}; }\n`);
-      }
-      cg = CodeGraph.initSync(testDir, { config: { include: ['**/*.ts'], exclude: [] } });
-      await cg.indexAll();
-    });
-
-    afterEach(() => {
-      if (cg) cg.destroy();
-      if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
-    });
-
-    it('does not block the event loop for the whole scan of many candidate files', async () => {
-      // Bump mtime on every file WITHOUT changing content: the (size,mtime)
-      // pre-filter fails, so the detection loop reads + hashes all N files (the
-      // expensive scan that wedges large Salesforce orgs), but nothing is
-      // re-indexed (content hash matches). If that scan runs as one synchronous
-      // block, a fast self-rescheduling `setImmediate` ticker is starved for the
-      // whole sync and barely advances. With periodic yields it advances freely.
-      const future = new Date(Date.now() + 60_000);
-      for (let i = 0; i < N; i++) {
-        fs.utimesSync(path.join(testDir, 'src', `mod${i}.ts`), future, future);
-      }
-
-      let ticks = 0;
-      let running = true;
-      const tick = () => { if (running) { ticks++; setImmediate(tick); } };
-      setImmediate(tick);
-
-      const result = await cg.sync();
-      running = false;
-
-      // The scan touched every file but re-indexed none (content unchanged).
-      expect(result.filesModified).toBe(0);
-      expect(result.filesChecked).toBeGreaterThanOrEqual(N);
-      // A fully-synchronous scan starves the ticker (≈1 turn). Periodic yields
-      // let it advance many times across the N-file scan.
-      expect(ticks).toBeGreaterThanOrEqual(4);
-    });
-  });
 
   describe('Git-based sync', () => {
     let testDir: string;
