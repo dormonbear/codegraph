@@ -568,13 +568,26 @@ export class QueryBuilder {
       // protobuf stub) outranks the real `server/etcdserver/server.go`
       // (470 edges) by 4×, and the boost would push the agent toward
       // generated code.
+      // Edge-driven: scan edges once, resolve each endpoint's file_path by
+      // primary key, keep same-file edges. The obvious form
+      // (`JOIN nodes n ON e.source=n.id JOIN nodes m ON e.target=m.id
+      // WHERE n.file_path=m.file_path`) lets the planner drive from nodes and
+      // self-join on file_path, which is O(Σ nodes_per_file²): a bundled
+      // static-resource `main.js` with 8200 nodes in one file explodes into
+      // ~67M pairs and the query runs for ~28 MINUTES on a large org (188k
+      // nodes / 472k edges), wedging the MCP daemon's main thread until the
+      // #850 liveness watchdog SIGKILLs it (surfaces to the agent as
+      // `-32001 Request timed out`). This form is O(edges) — ~0.8s on the
+      // same org, identical results.
       this.stmts.getDominantFile = this.db.prepare(`
-        SELECT n.file_path AS file_path, COUNT(*) AS edge_count
-        FROM edges e
-        JOIN nodes n ON e.source = n.id
-        JOIN nodes m ON e.target = m.id
-        WHERE n.file_path = m.file_path
-        GROUP BY n.file_path
+        SELECT file_path, COUNT(*) AS edge_count
+        FROM (
+          SELECT (SELECT file_path FROM nodes WHERE id = e.source) AS file_path,
+                 (SELECT file_path FROM nodes WHERE id = e.target) AS target_file
+          FROM edges e
+        )
+        WHERE file_path = target_file
+        GROUP BY file_path
         ORDER BY edge_count DESC
         LIMIT 20
       `);

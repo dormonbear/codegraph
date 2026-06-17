@@ -174,6 +174,53 @@ describe('insertEdges endpoint validation', () => {
   });
 });
 
+describe('getDominantFile (edge-driven)', () => {
+  let dir: string;
+  let db: DatabaseConnection;
+  let q: QueryBuilder;
+
+  const fileNode = (id: string, filePath: string): Node => ({ ...makeNode(id), filePath });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-perf-dominant-'));
+    db = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    q = new QueryBuilder(db.getDb());
+  });
+
+  afterEach(() => {
+    db.close();
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('ranks files by SAME-FILE edge count and ignores cross-file edges', () => {
+    // Regression for the O(Σ nodes_per_file²) self-join that wedged the MCP
+    // daemon for ~28min on large orgs (#getDominantFile hang). The rewrite
+    // must keep counting only same-file edges, never cross-file ones.
+    const nodes: Node[] = [fileNode('h0', 'hot.ts'), fileNode('c0', 'cold.ts')];
+    for (let i = 1; i <= 25; i++) nodes.push(fileNode(`h${i}`, 'hot.ts')); // 25 same-file edges to h0
+    for (let i = 1; i <= 5; i++) nodes.push(fileNode(`c${i}`, 'cold.ts')); // 5 same-file edges to c0
+    q.insertNodes(nodes);
+
+    const edges: { source: string; target: string; kind: 'calls' }[] = [];
+    for (let i = 1; i <= 25; i++) edges.push({ source: `h${i}`, target: 'h0', kind: 'calls' });
+    for (let i = 1; i <= 5; i++) edges.push({ source: `c${i}`, target: 'c0', kind: 'calls' });
+    edges.push({ source: 'h0', target: 'c0', kind: 'calls' }); // cross-file: must NOT count
+    q.insertEdges(edges);
+
+    const dom = q.getDominantFile();
+    expect(dom).not.toBeNull();
+    expect(dom!.filePath).toBe('hot.ts');
+    expect(dom!.edgeCount).toBe(25);
+    expect(dom!.nextEdgeCount).toBe(5);
+  });
+
+  it('returns null when no file clears the 20-edge floor', () => {
+    q.insertNodes([fileNode('a', 'x.ts'), fileNode('b', 'x.ts')]);
+    q.insertEdges([{ source: 'a', target: 'b', kind: 'calls' }]);
+    expect(q.getDominantFile()).toBeNull();
+  });
+});
+
 describe('runMaintenance', () => {
   let dir: string;
   let db: DatabaseConnection;

@@ -6,6 +6,11 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-17
+
+### Fixes
+- **`codegraph_explore` no longer times out on large Salesforce orgs.** A ranking step that looks for the project's "core" file ran a query that grew with the square of how many symbols share a file — on an org with a bundled static-resource `main.js` holding thousands of symbols it could run for tens of minutes, freezing the MCP server until its own watchdog killed it (the agent saw `MCP error -32001: Request timed out`). The query is now proportional to the number of edges instead, returning in about a second with identical results.
+
 ## [0.5.2] - 2026-06-17
 
 ### Fixes
