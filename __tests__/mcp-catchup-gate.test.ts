@@ -110,6 +110,34 @@ describe('MCP catch-up gate', () => {
     expect(cg.getStats().fileCount).toBe(0);
   });
 
+  it('does not wait out a slow catch-up — bounded gate serves the stale graph', async () => {
+    // A post-open catch-up that re-extracts tens of thousands of files (e.g. a
+    // Salesforce repo where a git branch-switch dirties the whole objects/
+    // metadata tree) must not block the first retrieval past the 60s liveness
+    // watchdog (#850). The gate wait is bounded; once it elapses we serve the
+    // slightly-stale graph while the sync finishes in the background.
+    const prev = process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+    process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = '30';
+    try {
+      let gateResolved = false;
+      const gate = new Promise<void>((resolve) => {
+        setTimeout(() => { gateResolved = true; resolve(); }, 1000);
+      });
+      handler.setCatchUpGate(gate);
+
+      const start = Date.now();
+      const res = await handler.execute('codegraph_search', { query: 'survivor' });
+      const waited = Date.now() - start;
+
+      expect(res.isError).toBeFalsy();
+      expect(gateResolved).toBe(false); // proceeded WITHOUT waiting for the slow sync
+      expect(waited).toBeLessThan(500); // returned near the 30ms bound, not 1000ms
+    } finally {
+      if (prev === undefined) delete process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS;
+      else process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS = prev;
+    }
+  });
+
   it('gate that rejects does not break the tool call', async () => {
     // A catch-up sync failure (lock contention, transient FS error) must
     // not poison tool dispatch — the engine logs it, the handler proceeds.

@@ -272,6 +272,17 @@ function exploreLineNumbersEnabled(): boolean {
   return process.env.CODEGRAPH_EXPLORE_LINENUMS !== '0';
 }
 
+/** Default 3s. How long the first tool call waits on the post-open catch-up
+ * before serving the stale graph (the sync keeps running in the background).
+ * `0` restores the old "wait fully" behavior; invalid/negative falls back. */
+export const DEFAULT_CATCHUP_GATE_TIMEOUT_MS = 3_000;
+export function parseCatchUpGateTimeoutMs(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_CATCHUP_GATE_TIMEOUT_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_CATCHUP_GATE_TIMEOUT_MS;
+  return Math.floor(n);
+}
+
 /**
  * Adaptive explore sizing (default ON). `codegraph_explore` skeletonizes OFF-SPINE
  * polymorphic-sibling files — a file whose class is one of ≥3 interchangeable
@@ -1211,7 +1222,23 @@ export class ToolHandler {
       if (this.catchUpGate) {
         const gate = this.catchUpGate;
         this.catchUpGate = null;
-        try { await gate; } catch { /* engine already logged */ }
+        // Bound the wait. A post-open catch-up that re-extracts tens of
+        // thousands of files (e.g. a Salesforce repo where a git branch-switch
+        // dirties the whole objects/ metadata tree) would otherwise block this
+        // first call past the 60s liveness watchdog (#850), which kills the
+        // daemon mid-query and surfaces as a hung retrieval. Wait briefly for
+        // the common small reconcile, then serve the slightly-stale graph while
+        // the sync finishes in the background. Set the env to 0 to wait fully.
+        gate.catch(() => { /* keeps running in background; never unhandled */ });
+        const timeoutMs = parseCatchUpGateTimeoutMs(process.env.CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS);
+        if (timeoutMs > 0) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const bound = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+          try { await Promise.race([gate, bound]); } catch { /* engine already logged */ }
+          finally { if (timer) clearTimeout(timer); }
+        } else {
+          try { await gate; } catch { /* engine already logged */ }
+        }
       }
       // Honor the optional tool allowlist (CODEGRAPH_MCP_TOOLS): a trimmed
       // surface rejects ablated tools defensively even if a client cached them.

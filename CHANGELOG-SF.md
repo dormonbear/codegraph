@@ -6,6 +6,9 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixes
+- **The first query after opening a project no longer hangs on large Salesforce orgs.** When a git branch-switch or pull dirties tens of thousands of metadata files, CodeGraph reconciles them in the background instead of blocking your first `codegraph_explore` / `codegraph_search` until the whole catch-up finishes — it now serves the (slightly stale) graph within a few seconds while the sync completes behind the scenes. Two parts: the first query waits only briefly for the reconcile before serving, and the change-scan itself no longer freezes the server while it walks a huge metadata tree. Set `CODEGRAPH_CATCHUP_GATE_TIMEOUT_MS=0` to restore the old wait-for-full-sync behavior.
+
 ## [0.5.1] - 2026-06-15
 
 ### Fixes
