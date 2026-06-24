@@ -6,6 +6,8 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-06-24
+
 ### New Features
 - Synced the upstream engine (`@colbymchenry/codegraph` v1.1.0). Highlights for fork users: dynamic-dispatch flows now resolve through more frameworks (Spring `publishEvent`, MediatR `Send`/`Publish`, Celery `.delay()`, Sidekiq, Laravel events, Vuex/Pinia/RTK Query); Java call chains follow Lombok-generated members; C/C++ function-pointer dispatch resolves; Go GoFrame routes bind to their controllers; and React `forwardRef`/`memo`/`styled` components are recognized.
 - Map custom file extensions to a language with an optional `codegraph.json` at the project root (e.g. `".tpl": "php"`) — handy for org-specific extensions.
