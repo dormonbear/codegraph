@@ -17,24 +17,20 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
 
   const listed = () => new ToolHandler(null).getTools().map(t => t.name).sort();
 
-  it('exposes the default 10-tool surface when unset', () => {
+  it('exposes the default 7-tool surface when unset', () => {
     delete process.env[ENV];
-    // (viva-local) The fork's default set (see DEFAULT_MCP_TOOLS): upstream's
-    // core 4 (explore + node workhorses, search the cheap lookup, callers the
-    // one irreplaceable enumerator) PLUS the 3 SObject FIELD tools and 3 SObject
-    // OBJECT tools, which are this fork's reason to exist so they must be LISTED
-    // by default. callees/impact/files/status stay defined but unlisted.
+    // (viva-local) Following upstream's explore-only default for the generic
+    // tools, PLUS the 3 SObject FIELD + 3 SObject OBJECT tools — this fork's
+    // reason to exist, so they must be LISTED by default.
+    // node/search/callers/callees/impact/files/status stay defined but unlisted.
     expect(listed()).toEqual([
-      'codegraph_callers',
       'codegraph_explore',
       'codegraph_field_impact',
       'codegraph_field_search',
       'codegraph_field_usages',
-      'codegraph_node',
       'codegraph_object_impact',
       'codegraph_object_search',
       'codegraph_object_usages',
-      'codegraph_search',
     ]);
   });
 
@@ -55,7 +51,7 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
 
   it('treats an empty/whitespace value as unset (default surface)', () => {
     process.env[ENV] = '   ';
-    expect(listed()).toHaveLength(10); // (viva-local) 4 upstream + 3 field + 3 object tools
+    expect(listed()).toHaveLength(7); // (viva-local) explore + 3 field + 3 object tools
     expect(listed()).toContain('codegraph_explore');
   });
 

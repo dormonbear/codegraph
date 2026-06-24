@@ -6,6 +6,17 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+### New Features
+- Synced the upstream engine (`@colbymchenry/codegraph` v1.1.0). Highlights for fork users: dynamic-dispatch flows now resolve through more frameworks (Spring `publishEvent`, MediatR `Send`/`Publish`, Celery `.delay()`, Sidekiq, Laravel events, Vuex/Pinia/RTK Query); Java call chains follow Lombok-generated members; C/C++ function-pointer dispatch resolves; Go GoFrame routes bind to their controllers; and React `forwardRef`/`memo`/`styled` components are recognized.
+- Map custom file extensions to a language with an optional `codegraph.json` at the project root (e.g. `".tpl": "php"`) — handy for org-specific extensions.
+- The MCP server now serves tools in a monorepo even when the root has no index — query a sub-project that has its own `.codegraph/` via `projectPath`.
+
+### Fixes
+- The default MCP tool surface now follows upstream's `codegraph_explore`-only default (the Salesforce field/object tools stay listed — re-enable any other tool with `CODEGRAPH_MCP_TOOLS`).
+- Files reached through an in-repo symlink that points outside the repo are now indexed; submodule worktrees are no longer double-indexed.
+
+> **Note:** this sync raises the Node floor to **20** and switches to Node's built-in SQLite — no native build step. Upgrading rebuilds each project's index once on first use.
+
 ## [0.5.3] - 2026-06-17
 
 ### Fixes
