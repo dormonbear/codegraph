@@ -609,6 +609,18 @@ add a negation — `!vendor/`. The defaults apply uniformly, so committing a
 dependency or build directory doesn't force it into the graph; the `.gitignore`
 negation is the explicit opt-in.
 
+`.gitignore` can't drop a directory you've **committed**, though. For a vendored
+theme or SDK that's checked into the repo (e.g. a Metronic theme under
+`static/`), list it under `exclude` in `codegraph.json` — gitignore-style
+patterns, matched against repo-root-relative paths, honored on index, sync, and
+watch:
+
+```json
+{
+  "exclude": ["static/", "**/vendor/**"]
+}
+```
+
 ### Custom file extensions
 
 If your project uses a non-standard extension for a [supported
@@ -755,6 +767,8 @@ The **Salesforce** number reflects a quirk of the platform, not the extractor: e
 - **`codegraph status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph/` folder) onto a local disk.
 
 **MCP server not connecting** — Ensure the project is initialized/indexed, verify the path in your MCP config, and check that `codegraph serve --mcp` works from the command line.
+
+**MCP tool calls fail with `Transport closed` while `codegraph status`/`sync` are healthy** — almost always WSL2 with the project on a Windows drive (a `/mnt/c` or `/mnt/d` path), where the local socket CodeGraph uses to share one background server across sessions is unreliable. CodeGraph now falls back to serving the session in-process instead of dropping the connection, but if you still hit it, set `CODEGRAPH_NO_DAEMON=1` in your MCP server's environment to skip the shared server entirely (each session runs in its own process). Moving the project onto the Linux-native filesystem (e.g. under `~/` instead of `/mnt/`) restores the shared server.
 
 **Missing symbols** — The MCP server auto-syncs on save (wait a couple seconds). Run `codegraph sync` manually if needed. Check that the file's language is supported and isn't inside a `.gitignore`d or default-excluded directory (e.g. `node_modules`, `dist`).
 

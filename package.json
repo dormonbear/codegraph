@@ -13,8 +13,8 @@
   },
   "forkedFrom": {
     "package": "@colbymchenry/codegraph",
-    "upstreamVersion": "1.1.0",
-    "upstreamCommit": "a7d4607"
+    "upstreamVersion": "1.1.6",
+    "upstreamCommit": "da72946"
   },
   "files": [
     "dist",
