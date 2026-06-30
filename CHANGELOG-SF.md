@@ -6,8 +6,14 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-06-30
+
+### New Features
+- Synced the upstream engine (`@colbymchenry/codegraph` v1.1.6). Highlights for fork users: indexing now parses files in parallel across a worker pool, so first-time indexing of a large org is faster; the MCP tools advertise a read-only hint so they work in Cursor's Ask mode; C++ coverage improved (inheritance from templated base classes, stack/brace construction, and export-macro-annotated classes); and `codegraph_explore` surfaces a named method's signature type and reports an accurate result count.
+
 ### Fixes
 - **`codegraph upgrade` now stays on the fork** instead of trying to replace itself with upstream `@colbymchenry/codegraph`. It previously resolved upstream's GitHub releases and ran `npm install -g @colbymchenry/codegraph`, which collided with the fork's own `codegraph` command and failed with `EEXIST`. The upgrade now reads its own package name and repository, so it checks the fork's releases and reinstalls `codegraph-sf`.
+- Picked up upstream indexing fixes: embedded git repos recorded as gitlinks now respect `.gitignore`, Android resource XML is excluded by default, a poisoned or oversized index rebuilds cleanly, and the `codegraph query` CLI no longer renders raw search scores as nonsensical percentages.
 
 ## [0.5.4] - 2026-06-24
 
