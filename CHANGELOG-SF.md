@@ -6,6 +6,9 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+### Fixes
+- **`codegraph upgrade` now stays on the fork** instead of trying to replace itself with upstream `@colbymchenry/codegraph`. It previously resolved upstream's GitHub releases and ran `npm install -g @colbymchenry/codegraph`, which collided with the fork's own `codegraph` command and failed with `EEXIST`. The upgrade now reads its own package name and repository, so it checks the fork's releases and reinstalls `codegraph-sf`.
+
 ## [0.5.4] - 2026-06-24
 
 ### New Features

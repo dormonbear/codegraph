@@ -29,8 +29,30 @@ import * as path from 'path';
 import * as https from 'https';
 import { spawnSync } from 'child_process';
 
-export const REPO = 'colbymchenry/codegraph';
-export const NPM_PACKAGE = '@colbymchenry/codegraph';
+/**
+ * Fork-aware: derive the npm package + GitHub repo from THIS package's own
+ * package.json instead of hardcoding upstream, so `codegraph upgrade` resolves
+ * the fork's GitHub releases and installs the fork's npm package — and so an
+ * upstream sync never produces a conflict here. Falls back to the fork
+ * constants if package.json can't be read/parsed.
+ */
+function deriveRepoInfo(): { repo: string; npmPackage: string } {
+  const fallback = { repo: 'dormonbear/codegraph', npmPackage: 'codegraph-sf' };
+  try {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')
+    );
+    const url: string = pkg.repository?.url ?? '';
+    const m = /github\.com[/:]([^/]+\/[^/.]+)/.exec(url);
+    return { repo: (m && m[1]) || fallback.repo, npmPackage: pkg.name || fallback.npmPackage };
+  } catch {
+    return fallback;
+  }
+}
+
+const REPO_INFO = deriveRepoInfo();
+export const REPO = REPO_INFO.repo;
+export const NPM_PACKAGE = REPO_INFO.npmPackage;
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main`;
 export const INSTALL_SH_URL = `${RAW_BASE}/install.sh`;
 
