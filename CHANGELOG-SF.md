@@ -6,6 +6,8 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-07-22
+
 ### New Features
 - Synced the upstream engine (`@colbymchenry/codegraph` v1.5.0). The headline is a native extraction kernel: upstream reimplemented the AST walker in Rust for the mainstream languages (TypeScript/JavaScript, Java, Python, Go, C/C++, Rust, C#, Ruby, PHP, Swift, Kotlin, Scala, Dart, Lua/Luau, R), so first-time indexing of those codebases is substantially faster. The kernel is optional and per-language — Salesforce (Apex/LWC/Visualforce/Aura) keeps its existing wasm parser unchanged, so nothing about SF indexing behavior changes. Also new upstream: several more languages (Erlang, CFML, COBOL, VB.NET, Solidity, Terraform/OpenTofu, Nix, ArkTS) and a large batch of indexing/resolution speedups.
 
