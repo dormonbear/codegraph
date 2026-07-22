@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe('WAL maintenance', () => {
-  it('runMaintenance bounds the WAL file and preserves rows', () => {
+  it('runMaintenance bounds the WAL file and preserves rows', async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-wal-'));
     const dbPath = path.join(dir, 'codegraph.db');
     const conn = DatabaseConnection.initialize(dbPath);
@@ -28,7 +28,7 @@ describe('WAL maintenance', () => {
       }
     })();
 
-    conn.runMaintenance();
+    await conn.runMaintenance();
 
     const walPath = `${dbPath}-wal`;
     const walSize = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;

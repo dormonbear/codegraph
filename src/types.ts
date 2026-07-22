@@ -14,6 +14,10 @@
  * Defined as a runtime-iterable `as const` array so the same source
  * of truth backs both the TS type and any runtime validation
  * (e.g. the search query parser).
+ *
+ * The ARRAY ORDER is part of the native kernel's wire contract (kinds cross
+ * the boundary as indexes — see src/extraction/kernel/layout.ts); append new
+ * kinds, never reorder.
  */
 export const NODE_KINDS = [
   'file',
@@ -45,21 +49,35 @@ export const NODE_KINDS = [
 export type NodeKind = (typeof NODE_KINDS)[number];
 
 /**
- * Types of edges (relationships) between nodes
+ * Types of edges (relationships) between nodes.
+ *
+ * Runtime-iterable like NODE_KINDS. The ARRAY ORDER is part of the native
+ * kernel's wire contract (kinds cross the boundary as indexes — see
+ * src/extraction/kernel/layout.ts); append new kinds, never reorder.
  */
+// EDGE_KINDS is the native-kernel ABI table: the loader byte-matches it against
+// the kernel's own baked-in table (kernel/loader.ts `sameTable`) and rejects a
+// mismatched .node (degrades to wasm for EVERY language). It must therefore stay
+// EXACTLY upstream's 12 kinds in this order — the fork's Salesforce edge kinds
+// extend the EdgeKind TYPE below only (they are wasm-path-only, never kernel-emitted,
+// and no runtime code validates an edge against this array).
+export const EDGE_KINDS = [
+  'contains',        // Parent contains child (file→class, class→method)
+  'calls',           // Function/method calls another
+  'imports',         // File imports from another
+  'exports',         // File exports a symbol
+  'extends',         // Class/interface extends another
+  'implements',      // Class implements interface
+  'references',      // Generic reference to another symbol
+  'type_of',         // Variable/parameter has type
+  'returns',         // Function returns type
+  'instantiates',    // Creates instance of class
+  'overrides',       // Method overrides parent method
+  'decorates',       // Decorator applied to symbol
+] as const;
+
 export type EdgeKind =
-  | 'contains'        // Parent contains child (file→class, class→method)
-  | 'calls'           // Function/method calls another
-  | 'imports'         // File imports from another
-  | 'exports'         // File exports a symbol
-  | 'extends'         // Class/interface extends another
-  | 'implements'      // Class implements interface
-  | 'references'      // Generic reference to another symbol
-  | 'type_of'         // Variable/parameter has type
-  | 'returns'         // Function returns type
-  | 'instantiates'    // Creates instance of class
-  | 'overrides'       // Method overrides parent method
-  | 'decorates'       // Decorator applied to symbol
+  | (typeof EDGE_KINDS)[number]
   // (viva-local) Salesforce SObject field usage edges — code site → sobject_field
   | 'field_read'      // Apex reads a field (RHS/arg/return)
   | 'field_write'     // Apex writes a field (assignment LHS, new SObject(F=...))
@@ -85,6 +103,7 @@ export const LANGUAGES = [
   'javascript',
   'tsx',
   'jsx',
+  'arkts',
   'python',
   'go',
   'rust',
@@ -112,10 +131,19 @@ export const LANGUAGES = [
   'luau',
   'objc',
   'r',
+  'solidity',
+  'nix',
   'yaml',
   'twig',
   'xml',
   'properties',
+  'cfml',
+  'cfscript',
+  'cfquery',
+  'cobol',
+  'vbnet',
+  'erlang',
+  'terraform',
   'unknown',
 ] as const;
 
@@ -276,6 +304,23 @@ export interface ExtractionResult {
 
   /** Extraction duration in milliseconds */
   durationMs: number;
+
+  /**
+   * Deferred-decode transport (native kernel, bulk-index path): when present,
+   * `nodes`/`edges`/`unresolvedReferences` are EMPTY and the file's tables
+   * ride as flat buffers to be decoded at the store boundary (the store
+   * worker), so the MAIN thread never materializes per-node objects.
+   * `kernelCounts` carries the table sizes for bookkeeping. Decode into a
+   * plain result with `materializeKernelResult` (src/extraction/kernel).
+   */
+  kernelBuffers?: {
+    meta: Uint8Array;
+    nodes: Uint8Array;
+    edges: Uint8Array;
+    refs: Uint8Array;
+    arena: Uint8Array;
+  };
+  kernelCounts?: { nodes: number; edges: number; refs: number };
 }
 
 /**
@@ -334,6 +379,17 @@ export interface UnresolvedReference {
 
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+
+  /**
+   * `unresolved_refs.id` when this ref was loaded from the database. Post-pass
+   * cleanup (delete-on-resolve / park-as-failed) targets exactly this row.
+   * Without it, cleanup falls back to deleting by (fromNodeId, referenceName,
+   * referenceKind) — which also removes SIBLING rows (same caller calling the
+   * same callee at other lines) that a later batch hasn't attempted yet, so
+   * their edges were silently never created when a batch boundary split the
+   * call sites (#1269).
+   */
+  rowId?: number;
 }
 
 // =============================================================================
@@ -429,6 +485,25 @@ export interface SearchResult {
 
   /** Matched text snippets for highlighting */
   highlights?: string[];
+}
+
+/**
+ * A symbol whose name-segments match prose words from a prompt — the
+ * graph-derived signal behind the front-load hook's medium tier
+ * (CodeGraph.getSegmentMatches). Always verified to exist in `nodes` at the
+ * time it is returned.
+ */
+export interface SegmentMatch {
+  /** Symbol name as indexed (e.g. `OrderStateMachine`). */
+  name: string;
+  /** Kind of the representative definition. */
+  kind: NodeKind;
+  /** File of the representative definition. */
+  filePath: string;
+  /** 1-based start line of the representative definition. */
+  startLine: number;
+  /** The prompt words (normalized) that matched this name's segments. */
+  matchedWords: string[];
 }
 
 // =============================================================================
