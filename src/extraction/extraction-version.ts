@@ -41,4 +41,6 @@
 // v28: object_relationship edges — lookup/master-detail field → its referenceTo object (orphan-on-delete).
 // v29: gitignore-exempt SObject metadata + usage-inferred nodes + polymorphic lookups + master-detail signature.
 // v30: upstream sync (1.0.1) — new R language extractor + cross-language extractor changes; forces one-time re-index.
-export const EXTRACTION_VERSION = 30;
+// v31: upstream sync (post-1.5.0 main, was at 25) — union declaration nodes (C/C++/ObjC/Rust),
+//      content-based generated-file detection, Python bare-class references; forces one-time re-index.
+export const EXTRACTION_VERSION = 31;
