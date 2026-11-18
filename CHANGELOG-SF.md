@@ -6,6 +6,14 @@ own changes, see [`CHANGELOG.md`](CHANGELOG.md).
 
 ## [Unreleased]
 
+### New Features
+- Synced the upstream engine (`@colbymchenry/codegraph` v1.6.3), bringing upstream's indexing, resolution and `codegraph_explore` improvements since v1.5.0, plus new CLI commands such as `codegraph cycles` and `codegraph unlock`.
+
+### Fixes
+- React `.tsx`/`.jsx` files that call Apex through `remoteAction("Class.method")` keep linking to the Apex method after the sync.
+
+> **Note:** this sync rebuilds each project's index once on first use after upgrading.
+
 ## [0.5.7] - 2026-08-20
 
 ### New Features

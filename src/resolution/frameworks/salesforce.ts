@@ -199,7 +199,7 @@ function resolveSObjectRef(ref: UnresolvedRef, context: ResolutionContext): Reso
 
 export const salesforceResolver: FrameworkResolver = {
   name: 'salesforce',
-  languages: ['javascript', 'typescript', 'visualforce', 'lwc', 'aura', 'apex'],
+  languages: ['javascript', 'typescript', 'tsx', 'jsx', 'visualforce', 'lwc', 'aura', 'apex'],
 
   claimsReference(name: string): boolean {
     // The `@remoteAction/...` / `@field/...` sentinels have no node of that
