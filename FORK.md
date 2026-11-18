@@ -36,11 +36,16 @@ insertions at stable hook points, not rewrites:
 - `src/extraction/tree-sitter.ts` — apex field-usage hooks in `visitNode` + `visitForCallsAndStructure`
 - `src/extraction/grammars.ts` — `isSObjectFieldMeta` / `isSalesforceMetadata` dispatch
 - `src/types.ts` — `sobject_field` NodeKind + `field_*` EdgeKinds
-- `src/resolution/name-matcher.ts` — the cross-family `calls` gate
-- `src/mcp/tools.ts`, `src/index.ts`, `src/mcp/server-instructions.ts` — the field tools
-- `package.json` — name/version (always a conflict; **keep ours**)
+- `src/resolution/name-matcher.ts` — `apex: 'apex'` in upstream's `CODE_FAMILY` (the cross-family `calls` gate)
+- `src/resolution/frameworks/salesforce.ts` — its `languages` list must cover every JS dialect (`javascript`/`typescript`/`tsx`/`jsx`); upstream only runs a framework resolver for languages it lists
+- `src/extraction/index.ts` — `mergeSalesforceMetadata` wraps `scanDirectory`'s results
+- `src/mcp/tools.ts`, `src/index.ts`, `src/mcp/server-instructions.ts`, `src/db/queries.ts` — the field/object tools
+- `src/bin/codegraph.ts` — `codegraph daemon gc`
+- `AGENTS.md` — the fork note in `## Releases` (`CLAUDE.md` is upstream's thin `@AGENTS.md` wrapper; take theirs)
+- `package.json` — name/version/`forkedFrom`/`prepare` (always a conflict; **keep ours**, take upstream's other fields); `ui/package.json` `version` must equal ours (`ui-package.test.ts`)
+- `telemetry-dashboard/`, `telemetry-worker/` — upstream's own telemetry service, left out of the fork: on conflict keep ours / drop upstream's added files and tests (e.g. `__tests__/telemetry-services.test.ts`)
 
-So `git merge upstream/main` typically conflicts in ~6–8 known files, each a simple
+So `git merge upstream/main` typically conflicts in ~10–15 known files, each a simple
 "both sides added lines" resolution.
 
 ## Sync from upstream

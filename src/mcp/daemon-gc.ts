@@ -60,7 +60,7 @@ export function listServeProcesses(): ServeProcess[] {
   if (process.platform === 'win32') return [];
   let out: string;
   try {
-    out = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' });
+    out = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', windowsHide: true });
   } catch {
     return [];
   }
